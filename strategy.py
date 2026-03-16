@@ -258,6 +258,7 @@ class EMAStrategy:
                 "fast EMA не растёт": ema_fast_slope <= 0,
                 "slow EMA не растёт": ema_slow_slope <= 0,
                 "EMA spread мал": ema_spread_pct <= self.min_ema_spread_pct,
+                "ADX слабый": adx < self.adx_threshold,
             }
 
             if self.require_price_above_slow_for_long:
@@ -296,6 +297,7 @@ class EMAStrategy:
                 "fast EMA не падает": ema_fast_slope >= 0,
                 "slow EMA не падает": ema_slow_slope >= 0,
                 "EMA spread мал": ema_spread_pct <= self.min_ema_spread_pct,
+                "ADX слабый": adx < self.adx_threshold,
             }
 
             if self.require_price_below_slow_for_short:

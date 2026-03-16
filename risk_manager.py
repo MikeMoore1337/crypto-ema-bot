@@ -135,6 +135,7 @@ class RiskManager:
         side: str,
         min_qty: float = 0.001,
         qty_step: float = 0.001,
+        signal_context: Optional[dict] = None,
     ) -> PositionParams:
         """
         Рассчитать параметры позиции.
@@ -145,10 +146,21 @@ class RiskManager:
             side: "LONG" или "SHORT"
             min_qty: минимальный размер лота
             qty_step: шаг изменения лота
+            signal_context: контекст сигнала, например {"adx": 32.5}
         """
         self._current_balance = balance
 
-        position_usdt = balance * self.trade_cfg.position_size_pct
+        signal_context = signal_context or {}
+        adx = float(signal_context.get("adx", 20))
+
+        if adx > 35:
+            position_size_pct = 0.15
+        elif adx > 25:
+            position_size_pct = 0.10
+        else:
+            position_size_pct = 0.05
+
+        position_usdt = balance * position_size_pct
 
         raw_qty = position_usdt / entry_price
         qty = max(min_qty, round(raw_qty / qty_step) * qty_step)
@@ -173,6 +185,7 @@ class RiskManager:
         log.info(
             f"Позиция [{side}] qty={qty} | "
             f"Entry={entry_price:.2f} SL={stop_loss:.2f} | "
+            f"ADX={adx:.1f} | size={position_size_pct * 100:.1f}% | "
             f"Риск=${risk_usdt:.2f} ({self.cfg.stop_loss_pct * 100:.1f}%)"
         )
 

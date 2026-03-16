@@ -215,6 +215,7 @@ class TradingBot:
             balance=balance,
             entry_price=price,
             side=side,
+            signal_context={"adx": result.adx},
         )
 
         if self.mode == "live":

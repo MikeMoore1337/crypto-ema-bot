@@ -11,7 +11,7 @@ import argparse
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, date, datetime
 
 import pandas as pd
 
@@ -31,42 +31,22 @@ class TradingBot:
         self.mode = mode
         self.cfg = Config.trading
         self.exchange = BybitExchange()
+        self.strategy = EMAStrategy()
         self.risk_manager = RiskManager()
 
         self.symbols = self.cfg.symbols if self.cfg.symbols else [self.cfg.symbol]
-
-        # Создаём отдельную стратегию для каждого символа —
-        # каждая применяет свои per-symbol параметры (spread, ATR, trailing)
-        self.strategies: dict[str, EMAStrategy] = {
-            symbol: EMAStrategy(symbol=symbol) for symbol in self.symbols
-        }
-        # Обратная совместимость: self.strategy указывает на стратегию первого символа
-        self.strategy = self.strategies[self.symbols[0]]
-
-        # Логируем активные параметры каждой стратегии
-        for sym, strat in self.strategies.items():
-            log.info(
-                f"{sym} стратегия: spread={strat.min_ema_spread_pct:.4f} "
-                f"atr_pct={strat.min_atr_pct:.4f} "
-                f"trailing={strat.atr_trailing_mult:.1f}× "
-                f"rsi={strat.long_rsi_limit:.0f}/{strat.short_rsi_limit:.0f}"
-            )
 
         self.positions: dict[str, str | None] = {symbol: None for symbol in self.symbols}
         self.position_info: dict[str, dict] = {symbol: {} for symbol in self.symbols}
 
         self.paper_balance = 100.0
-        self.paper_trades = []
+        self.paper_trades: list[dict] = []
 
-        self.last_report_day = None
+        self.last_report_day: date | None = None
         self.last_heartbeat = time.time()
 
         self.telegram = None
-        if (
-                Config.telegram.enabled
-                and Config.telegram.token
-                and Config.telegram.chat_id
-        ):
+        if Config.telegram.enabled and Config.telegram.token and Config.telegram.chat_id:
             self.telegram = TelegramNotifier(
                 Config.telegram.token,
                 Config.telegram.chat_id,
@@ -80,14 +60,13 @@ class TradingBot:
 
         if self.telegram:
             self.telegram.send(
-                f"🤖 Бот v2 запущен | режим: {mode.upper()} | "
+                f"🤖 Бот запущен | режим: {mode.upper()} | "
                 f"symbols: {symbols_str} | TF: {self.cfg.interval}m"
             )
 
         threading.Thread(target=self.watchdog, daemon=True).start()
 
     def _update_trailing_stop(self, symbol: str, signal_df: pd.DataFrame) -> None:
-        """Обновить trailing stop с учётом per-symbol параметров."""
         if not Config.strategy.use_atr_trailing_stop:
             return
 
@@ -95,7 +74,7 @@ class TradingBot:
         if not info:
             return
 
-        enriched = self.strategies[symbol].add_indicators(signal_df)
+        enriched = self.strategy.add_indicators(signal_df)
         last = enriched.iloc[-1]
 
         atr = float(last.get("atr", 0))
@@ -103,9 +82,7 @@ class TradingBot:
             return
 
         close_price = float(last["close"])
-
-        # Используем per-symbol mult вместо глобального
-        mult = Config.get_symbol_param(symbol, "atr_trailing_mult")
+        mult = Config.strategy.atr_trailing_mult
 
         if info["side"] == "LONG":
             info["highest_close"] = max(info["highest_close"], close_price)
@@ -125,54 +102,6 @@ class TradingBot:
             else:
                 info["trailing_stop"] = min(info["trailing_stop"], candidate)
 
-    def _update_breakeven_stop(self, symbol: str, signal_df: pd.DataFrame) -> None:
-        """
-        Перенести стоп в безубыток после прохождения N×ATR в нашу сторону.
-
-        Работает синхронно с trailing stop:
-        - trailing stop поднимается снизу вслед за ценой
-        - breakeven stop гарантирует что SL не опустится ниже entry
-
-        Итог: позиция либо закрывается в 0 (если тренд не пошёл),
-        либо trailing ловит всё движение.
-        """
-        if not Config.get_symbol_param(symbol, "use_breakeven_stop"):
-            return
-
-        info = self.position_info.get(symbol, {})
-        if not info or info.get("breakeven_set"):
-            return
-
-        enriched = self.strategies[symbol].add_indicators(signal_df)
-        last = enriched.iloc[-1]
-
-        atr = float(last.get("atr", 0))
-        if atr <= 0:
-            return
-
-        close_price = float(last["close"])
-        entry = info["entry"]
-        trigger = Config.get_symbol_param(symbol, "atr_breakeven_trigger")
-        trigger_distance = atr * trigger
-
-        if info["side"] == "LONG" and close_price - entry >= trigger_distance:
-            old_sl = info["sl"]
-            info["sl"] = max(old_sl, entry)
-            info["breakeven_set"] = True
-            log.info(
-                f"📌 {symbol} Breakeven: SL {old_sl:.2f} → {info['sl']:.2f} "
-                f"(entry={entry:.2f} +{close_price - entry:.2f} >= {trigger_distance:.2f})"
-            )
-
-        elif info["side"] == "SHORT" and entry - close_price >= trigger_distance:
-            old_sl = info["sl"]
-            info["sl"] = min(old_sl, entry)
-            info["breakeven_set"] = True
-            log.info(
-                f"📌 {symbol} Breakeven: SL {old_sl:.2f} → {info['sl']:.2f} "
-                f"(entry={entry:.2f} -{entry - close_price:.2f} >= {trigger_distance:.2f})"
-            )
-
     def run(self) -> None:
         log.info("▶️  Запуск торгового цикла...")
         log.info("   Ctrl+C для остановки")
@@ -190,7 +119,7 @@ class TradingBot:
             try:
                 self.last_heartbeat = time.time()
 
-                now_utc = datetime.now(timezone.utc)
+                now_utc = datetime.now(UTC)
                 today = now_utc.date()
 
                 if self.last_report_day is None:
@@ -247,12 +176,14 @@ class TradingBot:
         htf_signal_df = htf_df.iloc[:-1].copy()
 
         if self.positions[symbol] is not None:
-            self._update_breakeven_stop(symbol, signal_df)
             self._update_trailing_stop(symbol, signal_df)
 
-        if self.mode == "paper" and self.positions[symbol] is not None:
-            if self._check_paper_exit_by_stops(symbol, current_bar):
-                return
+        if (
+            self.mode == "paper"
+            and self.positions[symbol] is not None
+            and self._check_paper_exit_by_stops(symbol, current_bar)
+        ):
+            return
 
         balance = self._get_balance()
         self.risk_manager.update_balance(balance)
@@ -260,7 +191,7 @@ class TradingBot:
         can_trade, reason = self.risk_manager.can_trade(balance)
         current_position = self.positions[symbol]
 
-        result = self.strategies[symbol].get_signal(
+        result = self.strategy.get_signal(
             signal_df,
             current_position,
             htf_signal_df,
@@ -276,13 +207,16 @@ class TradingBot:
             if not can_trade:
                 log.warning(f"{symbol}: ⛔ Торговля заблокирована: {reason}")
                 return
-            self._open_position(symbol, result.signal.value, exec_price, balance)
+            self._open_position(symbol, result.signal.value, exec_price, balance, adx=result.adx)
 
-    def _open_position(self, symbol: str, side: str, price: float, balance: float) -> None:
+    def _open_position(
+        self, symbol: str, side: str, price: float, balance: float, adx: float = 0.0
+    ) -> None:
         params = self.risk_manager.calculate_position(
             balance=balance,
             entry_price=price,
             side=side,
+            signal_context={"adx": adx},
         )
 
         if self.mode == "live":
@@ -306,7 +240,6 @@ class TradingBot:
                     "trailing_stop": None,
                     "highest_close": price,
                     "lowest_close": price,
-                    "breakeven_set": False,
                 }
 
                 log.info(
@@ -316,7 +249,7 @@ class TradingBot:
 
                 if self.telegram:
                     self.telegram.send(
-                        f"Бот v2🚀 {symbol} {side}\n"
+                        f"🚀 {symbol} {side}\n"
                         f"Цена: {price:.2f}\n"
                         f"SL: {params.stop_loss:.2f}\n"
                         f"Qty: {params.qty:.4f}"
@@ -333,7 +266,6 @@ class TradingBot:
                 "trailing_stop": None,
                 "highest_close": price,
                 "lowest_close": price,
-                "breakeven_set": False,
             }
 
             log.info(
@@ -343,7 +275,7 @@ class TradingBot:
 
             if self.telegram:
                 self.telegram.send(
-                    f"Бот v2 🚀 {symbol} {side}\n"
+                    f"🚀 {symbol} {side}\n"
                     f"Цена: {price:.2f}\n"
                     f"SL: {params.stop_loss:.2f}\n"
                     f"Qty: {params.qty:.4f}"
@@ -366,7 +298,7 @@ class TradingBot:
 
             if self.telegram:
                 self.telegram.send(
-                    f"Бот v2 ❌ {symbol} | Закрыта {position_side}\n"
+                    f"❌ {symbol} | Закрыта {position_side}\n"
                     f"Цена выхода: {price:.2f}\n"
                     f"Причина: {exit_reason}"
                 )
@@ -384,10 +316,12 @@ class TradingBot:
             net_pnl = pnl - commission
 
             self.paper_balance += net_pnl
-            self.paper_trades.append({
-                "symbol": symbol,
-                "pnl": net_pnl,
-            })
+            self.paper_trades.append(
+                {
+                    "symbol": symbol,
+                    "pnl": net_pnl,
+                }
+            )
 
             self.risk_manager.record_trade_result(
                 net_pnl,
@@ -403,7 +337,7 @@ class TradingBot:
 
             if self.telegram:
                 self.telegram.send(
-                    f"Бот v2 ❌ {symbol} | Закрыта {position_side}\n"
+                    f"❌ {symbol} | Закрыта {position_side}\n"
                     f"Цена выхода: {price:.2f}\n"
                     f"Причина: {exit_reason}\n"
                     f"P&L: {net_pnl:+.4f}$\n"
@@ -430,8 +364,11 @@ class TradingBot:
                 active_stop = max(active_stop, trailing)
 
             if low <= active_stop:
-                reason = "ATR-Trail" if trailing is not None and active_stop == max(sl,
-                                                                                    trailing) and trailing > sl else "SL"
+                reason = (
+                    "ATR-Trail"
+                    if trailing is not None and active_stop == max(sl, trailing) and trailing > sl
+                    else "SL"
+                )
                 self._close_position(symbol, active_stop, exit_reason=reason)
                 return True
 
@@ -441,8 +378,11 @@ class TradingBot:
                 active_stop = min(active_stop, trailing)
 
             if high >= active_stop:
-                reason = "ATR-Trail" if trailing is not None and active_stop == min(sl,
-                                                                                    trailing) and trailing < sl else "SL"
+                reason = (
+                    "ATR-Trail"
+                    if trailing is not None and active_stop == min(sl, trailing) and trailing < sl
+                    else "SL"
+                )
                 self._close_position(symbol, active_stop, exit_reason=reason)
                 return True
 
@@ -519,13 +459,13 @@ class TradingBot:
 
 
 def load_full_history(
-        exchange: BybitExchange,
-        symbol: str,
-        interval: str,
-        needed_candles: int,
+    exchange: BybitExchange,
+    symbol: str,
+    interval: str,
+    needed_candles: int,
 ) -> pd.DataFrame:
     all_dfs = []
-    end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    end_ms = int(datetime.now(UTC).timestamp() * 1000)
 
     while True:
         batch = exchange.get_candles(
@@ -569,15 +509,10 @@ def run_backtest() -> None:
     log.info("Запуск бэктестинга...")
 
     exchange = BybitExchange()
+    backtester = Backtester()
+
     cfg = Config.trading
     bt_cfg = Config.backtest
-
-    # Показываем активные per-symbol override для символа из конфига
-    override = Config.symbol_overrides.get(cfg.symbol)
-    if override:
-        log.info(f"Per-symbol override для {cfg.symbol}: {override}")
-
-    backtester = Backtester(symbol=cfg.symbol)
 
     candles_per_day = (24 * 60) // int(cfg.interval)
     needed_candles = candles_per_day * bt_cfg.days
@@ -600,24 +535,24 @@ def run_backtest() -> None:
     htf_needed = htf_days * 24
 
     log.info("Загрузка часовых свечей для HTF фильтра...")
-    htf_df = load_full_history(
+    htf_df: pd.DataFrame | None = load_full_history(
         exchange=exchange,
         symbol=cfg.symbol,
         interval="60",
         needed_candles=htf_needed,
     )
 
-    if htf_df.empty:
+    if htf_df is not None and htf_df.empty:
         log.warning("Не удалось загрузить HTF данные - бэктест пойдёт без полноценного HTF фильтра")
         htf_df = None
-    else:
+    elif htf_df is not None:
         log.info(f"Загружено {len(htf_df)} часовых свечей [1h]")
 
     report = backtester.run(df, htf_df)
     report.print()
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Bybit Trading Bot")
     parser.add_argument(
         "--mode",

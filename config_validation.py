@@ -96,47 +96,6 @@ def validate_config(*, mode: str) -> list[ValidationIssue]:
             )
         )
 
-    # ATR trailing
-    if strat.use_atr_trailing_stop and strat.atr_trailing_mult <= 0:
-        issues.append(
-            ValidationIssue("ERROR", "atr_trailing_mult должен быть > 0")
-        )
-    if strat.use_atr_trailing_stop and strat.atr_trailing_mult < 1.0:
-        issues.append(
-            ValidationIssue(
-                "WARNING",
-                f"atr_trailing_mult={strat.atr_trailing_mult} очень мал — "
-                "trailing stop будет слишком плотным и вышибать позиции на шуме",
-            )
-        )
-
-    # Breakeven
-    if strat.use_breakeven_stop and strat.atr_breakeven_trigger <= 0:
-        issues.append(
-            ValidationIssue("ERROR", "atr_breakeven_trigger должен быть > 0")
-        )
-    if strat.use_breakeven_stop and strat.atr_breakeven_trigger > strat.atr_trailing_mult:
-        issues.append(
-            ValidationIssue(
-                "WARNING",
-                f"atr_breakeven_trigger ({strat.atr_breakeven_trigger}) > "
-                f"atr_trailing_mult ({strat.atr_trailing_mult}) — "
-                "breakeven никогда не сработает до trailing stop",
-            )
-        )
-
-    # Per-symbol overrides
-    from config import Config, SymbolOverride
-    for sym, override in Config.symbol_overrides.items():
-        if override.atr_trailing_mult is not None and override.atr_trailing_mult <= 0:
-            issues.append(
-                ValidationIssue("ERROR", f"symbol_overrides[{sym}].atr_trailing_mult должен быть > 0")
-            )
-        if override.atr_breakeven_trigger is not None and override.atr_breakeven_trigger <= 0:
-            issues.append(
-                ValidationIssue("ERROR", f"symbol_overrides[{sym}].atr_breakeven_trigger должен быть > 0")
-            )
-
     # --- Режим LIVE: защита от глупых ошибок ---
     if mode == "live":
         if not exch.api_key or not exch.api_secret:

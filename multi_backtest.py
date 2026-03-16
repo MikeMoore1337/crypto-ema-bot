@@ -15,8 +15,7 @@ multi_backtest.py - Массовый бэктест стратегии по не
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from typing import Optional
+from dataclasses import asdict, dataclass
 
 import pandas as pd
 
@@ -108,7 +107,7 @@ def align_htf_window(htf_df: pd.DataFrame, ltf_window: pd.DataFrame) -> pd.DataF
 
     warmup_tail = before_start.tail(warmup_hours)
     result = pd.concat([warmup_tail, inside]).drop_duplicates("timestamp").reset_index(drop=True)
-    return result
+    return pd.DataFrame(result)
 
 
 def run_single_backtest(
@@ -116,10 +115,10 @@ def run_single_backtest(
     symbol: str,
     window_index: int,
     window_name: str,
-) -> Optional[SymbolBacktestResult]:
+) -> SymbolBacktestResult | None:
     cfg = Config.trading
     bt_cfg = Config.backtest
-    backtester = Backtester(symbol=symbol)
+    backtester = Backtester()
 
     candles_per_day = (24 * 60) // int(cfg.interval)
     needed_candles = candles_per_day * bt_cfg.days
@@ -213,14 +212,20 @@ def print_summary(df: pd.DataFrame) -> None:
 
     print("═" * 150)
 
-    grouped = df.groupby("symbol").agg({
-        "total_return_pct": "mean",
-        "profit_factor": "mean",
-        "max_drawdown_pct": "mean",
-        "total_trades": "sum",
-        "win_rate_pct": "mean",
-        "sharpe_ratio": "mean",
-    }).reset_index()
+    grouped = (
+        df.groupby("symbol")
+        .agg(
+            {
+                "total_return_pct": "mean",
+                "profit_factor": "mean",
+                "max_drawdown_pct": "mean",
+                "total_trades": "sum",
+                "win_rate_pct": "mean",
+                "sharpe_ratio": "mean",
+            }
+        )
+        .reset_index()
+    )
 
     print("\n" + "═" * 90)
     print("СРЕДНИЕ ПО СИМВОЛАМ")
@@ -250,48 +255,12 @@ def print_summary(df: pd.DataFrame) -> None:
     print("═" * 90)
 
 
-def print_active_params() -> None:
-    """
-    Показать активные параметры для каждого символа перед запуском.
-    Помогает быстро диагностировать почему символ даёт 0 сделок.
-    """
-    from strategy import EMAStrategy
-
-    symbols_to_check = list(Config.symbol_overrides.keys()) or ["BTCUSDT"]
-    print("\n" + "─" * 75)
-    print("АКТИВНЫЕ ПАРАМЕТРЫ СТРАТЕГИИ ПО СИМВОЛАМ")
-    print("─" * 75)
-    print(
-        f"{'Symbol':<12} "
-        f"{'spread':<10} "
-        f"{'atr_pct':<10} "
-        f"{'trailing':<10} "
-        f"{'breakeven':<10} "
-        f"{'rsi L/S':<10}"
-    )
-    print("─" * 75)
-    for sym in symbols_to_check:
-        s = EMAStrategy(symbol=sym)
-        print(
-            f"{sym:<12} "
-            f"{s.min_ema_spread_pct:<10.4f} "
-            f"{s.min_atr_pct:<10.4f} "
-            f"{s.atr_trailing_mult:<10.1f} "
-            f"{Config.get_symbol_param(sym, 'atr_breakeven_trigger'):<10.1f} "
-            f"{s.long_rsi_limit:.0f}/{s.short_rsi_limit:.0f}"
-        )
-    print("─" * 75 + "\n")
-
-
 def main() -> None:
     symbols = ["BTCUSDT", "ETHUSDT"]
     windows = [
         (0, "last_90d"),
         (1, "prev_90d"),
     ]
-
-    # Показываем параметры до запуска — сразу видно если что-то не так
-    print_active_params()
 
     exchange = BybitExchange()
     results: list[dict] = []
@@ -305,13 +274,6 @@ def main() -> None:
                 window_name=window_name,
             )
             if result is not None:
-                # Предупреждение если символ дал 0 сделок — помогает диагностировать фильтры
-                if result.total_trades == 0:
-                    log.warning(
-                        f"⚠️  {symbol} | {window_name}: 0 сделок — "
-                        f"проверь min_atr_pct={Config.get_symbol_param(symbol, 'min_atr_pct'):.4f} "
-                        f"и min_ema_spread_pct={Config.get_symbol_param(symbol, 'min_ema_spread_pct'):.4f}"
-                    )
                 results.append(asdict(result))
 
     df = pd.DataFrame(results)
@@ -319,11 +281,8 @@ def main() -> None:
         print("Не удалось получить результаты")
         return
 
-    # Фильтруем строки с 0 сделок из итоговой таблицы — они только мусорят
-    df_display = df[df["total_trades"] > 0].copy()
-    print_summary(df_display)
+    print_summary(df)
 
-    # В CSV сохраняем все, включая нулевые — для отладки
     out_file = "multi_backtest_results.csv"
     df.to_csv(out_file, index=False)
     print(f"\nРезультаты сохранены в: {out_file}")

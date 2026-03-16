@@ -3,7 +3,6 @@ backtest.py - Движок бэктестинга на исторических 
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -64,17 +63,17 @@ class BacktestReport:
         print("═" * 55)
 
         strong = (
-                self.total_return_pct > 5
-                and self.profit_factor > 1.5
-                and self.max_drawdown_pct < 10
-                and self.total_trades >= 20
+            self.total_return_pct > 5
+            and self.profit_factor > 1.5
+            and self.max_drawdown_pct < 10
+            and self.total_trades >= 20
         )
 
         acceptable = (
-                self.total_return_pct > 0
-                and self.profit_factor > 1.2
-                and self.max_drawdown_pct < 15
-                and self.total_trades >= 10
+            self.total_return_pct > 0
+            and self.profit_factor > 1.2
+            and self.max_drawdown_pct < 15
+            and self.total_trades >= 10
         )
 
         if strong:
@@ -89,17 +88,11 @@ class BacktestReport:
 
 
 class Backtester:
-    def __init__(self, symbol: str = ""):
+    def __init__(self) -> None:
         self.cfg = Config.backtest
+        self.strategy = EMAStrategy()
         self.risk_cfg = Config.risk
         self.trade_cfg = Config.trading
-        self.symbol = symbol or Config.trading.symbol
-        # Стратегия создаётся с символом — применяет per-symbol параметры
-        self.strategy = EMAStrategy(symbol=self.symbol)
-
-    def _get_param(self, param: str):
-        """Получить параметр с учётом per-symbol override."""
-        return Config.get_symbol_param(self.symbol, param)
 
     def _update_trailing_stop(self, position: dict, row: pd.Series) -> None:
         if not Config.strategy.use_atr_trailing_stop:
@@ -109,7 +102,7 @@ class Backtester:
         if atr <= 0:
             return
 
-        mult = self._get_param("atr_trailing_mult")
+        mult = Config.strategy.atr_trailing_mult
 
         if position["side"] == "LONG":
             position["highest_close"] = max(position["highest_close"], float(row["close"]))
@@ -129,55 +122,9 @@ class Backtester:
             else:
                 position["trailing_stop"] = min(position["trailing_stop"], candidate)
 
-    def _update_breakeven_stop(self, position: dict, row: pd.Series) -> None:
-        """
-        Перенести стоп в безубыток после прохождения N×ATR в нашу сторону.
-
-        Логика:
-          - Смотрим сколько ATR прошла цена от точки входа
-          - Если >= atr_breakeven_trigger → поднимаем floor стопа до entry_price
-          - Это не отменяет trailing stop — просто не даём уйти в минус
-            после того как позиция уже показала движение в нашу сторону
-
-        Эффект для ETH: часть из 52 маленьких убытков (-1.5%) становится 0%.
-        """
-        if not self._get_param("use_breakeven_stop"):
-            return
-        if position.get("breakeven_set"):
-            return  # уже установлен, не трогаем
-
-        atr = float(row.get("atr", 0))
-        if atr <= 0:
-            return
-
-        trigger_distance = atr * self._get_param("atr_breakeven_trigger")
-        entry = position["entry_price"]
-        price = float(row["close"])
-
-        if position["side"] == "LONG":
-            if price - entry >= trigger_distance:
-                # Поднимаем floor стопа до entry (но не выше trailing)
-                current_sl = position["stop_loss"]
-                position["stop_loss"] = max(current_sl, entry)
-                position["breakeven_set"] = True
-                log.debug(
-                    f"Breakeven установлен: entry={entry:.2f} "
-                    f"price={price:.2f} (+{price - entry:.2f} >= {trigger_distance:.2f})"
-                )
-        else:
-            if entry - price >= trigger_distance:
-                current_sl = position["stop_loss"]
-                position["stop_loss"] = min(current_sl, entry)
-                position["breakeven_set"] = True
-                log.debug(
-                    f"Breakeven установлен: entry={entry:.2f} "
-                    f"price={price:.2f} (-{entry - price:.2f} >= {trigger_distance:.2f})"
-                )
-
-    def run(self, df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> BacktestReport:
+    def run(self, df: pd.DataFrame, htf_df: pd.DataFrame | None = None) -> BacktestReport:
         log.info(
-            f"Бэктест на {len(df)} свечах | "
-            f"{df['timestamp'].iloc[0]} → {df['timestamp'].iloc[-1]}"
+            f"Бэктест на {len(df)} свечах | {df['timestamp'].iloc[0]} → {df['timestamp'].iloc[-1]}"
         )
 
         df = self.strategy.add_indicators(df)
@@ -187,7 +134,7 @@ class Backtester:
         equity_curve = [balance]
         trades: list[Trade] = []
 
-        position: Optional[dict] = None
+        position: dict | None = None
         start = Config.strategy.min_candles
 
         for i in range(start, len(df)):
@@ -197,8 +144,8 @@ class Backtester:
             high = float(row["high"])
 
             if position is not None:
-                exit_price = None
-                exit_reason = None
+                exit_price: float | None = None
+                exit_reason: str = ""
 
                 if position["side"] == "LONG":
                     active_stop = position["stop_loss"]
@@ -221,23 +168,25 @@ class Backtester:
                 if exit_price is not None:
                     pnl = self._calculate_pnl(position, exit_price, commission)
                     balance += pnl
-                    trades.append(Trade(
-                        entry_time=position["entry_time"],
-                        exit_time=row["timestamp"],
-                        side=position["side"],
-                        entry_price=position["entry_price"],
-                        exit_price=exit_price,
-                        qty=position["qty"],
-                        pnl=pnl,
-                        pnl_pct=(pnl / (position["qty"] * position["entry_price"])) * 100,
-                        exit_reason=exit_reason,
-                    ))
+                    trades.append(
+                        Trade(
+                            entry_time=position["entry_time"],
+                            exit_time=row["timestamp"],
+                            side=position["side"],
+                            entry_price=position["entry_price"],
+                            exit_price=exit_price,
+                            qty=position["qty"],
+                            pnl=pnl,
+                            pnl_pct=(pnl / (position["qty"] * position["entry_price"])) * 100,
+                            exit_reason=exit_reason,
+                        )
+                    )
                     equity_curve.append(balance)
                     position = None
                     continue
 
             current_side = position["side"] if position else None
-            signal_window = df.iloc[max(0, i - Config.strategy.min_candles):i + 1]
+            signal_window = df.iloc[max(0, i - Config.strategy.min_candles) : i + 1]
 
             htf_window = None
             if htf_df is not None:
@@ -251,17 +200,19 @@ class Backtester:
             if result.signal == Signal.CLOSE and position is not None:
                 pnl = self._calculate_pnl(position, price, commission)
                 balance += pnl
-                trades.append(Trade(
-                    entry_time=position["entry_time"],
-                    exit_time=row["timestamp"],
-                    side=position["side"],
-                    entry_price=position["entry_price"],
-                    exit_price=price,
-                    qty=position["qty"],
-                    pnl=pnl,
-                    pnl_pct=(pnl / (position["qty"] * position["entry_price"])) * 100,
-                    exit_reason="Signal",
-                ))
+                trades.append(
+                    Trade(
+                        entry_time=position["entry_time"],
+                        exit_time=row["timestamp"],
+                        side=position["side"],
+                        entry_price=position["entry_price"],
+                        exit_price=price,
+                        qty=position["qty"],
+                        pnl=pnl,
+                        pnl_pct=(pnl / (position["qty"] * position["entry_price"])) * 100,
+                        exit_reason="Signal",
+                    )
+                )
                 equity_curve.append(balance)
                 position = None
                 continue
@@ -286,12 +237,10 @@ class Backtester:
                     "trailing_stop": None,
                     "highest_close": price,
                     "lowest_close": price,
-                    "breakeven_set": False,
                 }
                 continue
 
             if position is not None:
-                self._update_breakeven_stop(position, row)
                 self._update_trailing_stop(position, row)
 
         return self._build_report(trades, balance, equity_curve)
@@ -307,13 +256,13 @@ class Backtester:
             raw_pnl = (entry - exit_price) * qty
 
         total_commission = (entry * qty + exit_price * qty) * commission
-        return raw_pnl - total_commission
+        return float(raw_pnl - total_commission)
 
     def _build_report(
-            self,
-            trades: list[Trade],
-            final_balance: float,
-            equity_curve: list[float],
+        self,
+        trades: list[Trade],
+        final_balance: float,
+        equity_curve: list[float],
     ) -> BacktestReport:
         initial = self.cfg.initial_balance
 
@@ -326,8 +275,8 @@ class Backtester:
         profit_factor = total_win / total_loss if total_loss > 0 else float("inf")
 
         equity = pd.Series(equity_curve)
-        rolling_max = equity.cummax()
-        drawdown = (equity - rolling_max) / rolling_max * 100
+        rolling_max: pd.Series = equity.cummax()
+        drawdown: pd.Series = (equity - rolling_max) / rolling_max * 100
         max_drawdown = abs(drawdown.min())
 
         if len(trades) > 1:

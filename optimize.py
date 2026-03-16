@@ -56,6 +56,8 @@ class OptimizationResult:
     soft_htf_filter: bool
     require_price_above_slow_for_long: bool
     require_price_below_slow_for_short: bool
+    atr_trailing_mult: float
+    atr_breakeven_trigger: float
 
     total_return_pct: float
     profit_factor: float
@@ -89,6 +91,8 @@ def snapshot_config() -> dict[str, Any]:
         "soft_htf_filter": Config.strategy.soft_htf_filter,
         "require_price_above_slow_for_long": Config.strategy.require_price_above_slow_for_long,
         "require_price_below_slow_for_short": Config.strategy.require_price_below_slow_for_short,
+        "atr_trailing_mult": Config.strategy.atr_trailing_mult,
+        "atr_breakeven_trigger": Config.strategy.atr_breakeven_trigger,
     }
 
 
@@ -102,6 +106,8 @@ def restore_config(snapshot: dict[str, Any]) -> None:
     Config.strategy.soft_htf_filter = snapshot["soft_htf_filter"]
     Config.strategy.require_price_above_slow_for_long = snapshot["require_price_above_slow_for_long"]
     Config.strategy.require_price_below_slow_for_short = snapshot["require_price_below_slow_for_short"]
+    Config.strategy.atr_trailing_mult = snapshot["atr_trailing_mult"]
+    Config.strategy.atr_breakeven_trigger = snapshot["atr_breakeven_trigger"]
 
 
 def set_config_values(
@@ -115,18 +121,20 @@ def set_config_values(
         soft_htf_filter: bool,
         require_price_above_slow_for_long: bool,
         require_price_below_slow_for_short: bool,
+        atr_trailing_mult: float,
+        atr_breakeven_trigger: float,
 ) -> None:
     Config.strategy.long_rsi_limit = long_rsi_limit
     Config.strategy.short_rsi_limit = short_rsi_limit
     Config.strategy.min_ema_spread_pct = min_ema_spread_pct
     Config.strategy.slope_lookback = slope_lookback
-
     Config.risk.stop_loss_pct = stop_loss_pct
     Config.risk.take_profit_pct = take_profit_pct
-
     Config.strategy.soft_htf_filter = soft_htf_filter
     Config.strategy.require_price_above_slow_for_long = require_price_above_slow_for_long
     Config.strategy.require_price_below_slow_for_short = require_price_below_slow_for_short
+    Config.strategy.atr_trailing_mult = atr_trailing_mult
+    Config.strategy.atr_breakeven_trigger = atr_breakeven_trigger
 
 
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame | None]:
@@ -212,6 +220,12 @@ def build_param_grid() -> list[dict[str, Any]]:
     soft_htf_values = [True]
     price_filter_values = [True]
 
+    # Новые параметры — ATR trailing и breakeven
+    # atr_trailing_mult: чем больше, тем шире trailing → держим тренд дольше
+    # atr_breakeven_trigger: когда переводим стоп в безубыток (в единицах ATR)
+    trailing_mult_values = [2.0, 2.5, 3.0]
+    breakeven_trigger_values = [0.8, 1.0, 1.5]
+
     grid: list[dict[str, Any]] = []
 
     for (
@@ -223,6 +237,8 @@ def build_param_grid() -> list[dict[str, Any]]:
             tp,
             soft_htf,
             price_filter,
+            trailing_mult,
+            breakeven_trigger,
     ) in product(
         long_rsi_values,
         short_rsi_values,
@@ -232,6 +248,8 @@ def build_param_grid() -> list[dict[str, Any]]:
         take_profit_values,
         soft_htf_values,
         price_filter_values,
+        trailing_mult_values,
+        breakeven_trigger_values,
     ):
         if tp <= sl:
             continue
@@ -248,6 +266,8 @@ def build_param_grid() -> list[dict[str, Any]]:
             "soft_htf_filter": soft_htf,
             "require_price_above_slow_for_long": price_filter,
             "require_price_below_slow_for_short": price_filter,
+            "atr_trailing_mult": trailing_mult,
+            "atr_breakeven_trigger": breakeven_trigger,
         })
 
     return grid
@@ -258,9 +278,7 @@ def evaluate_combination(
         df: pd.DataFrame,
         htf_df: pd.DataFrame | None,
 ) -> dict[str, Any]:
-    """
-    Worker-функция для одного набора параметров.
-    """
+    """Worker-функция для одного набора параметров."""
     configure_optimize_log_levels()
     set_config_values(**params)
 
@@ -288,6 +306,8 @@ def evaluate_combination(
         soft_htf_filter=params["soft_htf_filter"],
         require_price_above_slow_for_long=params["require_price_above_slow_for_long"],
         require_price_below_slow_for_short=params["require_price_below_slow_for_short"],
+        atr_trailing_mult=params["atr_trailing_mult"],
+        atr_breakeven_trigger=params["atr_breakeven_trigger"],
         total_return_pct=report.total_return_pct,
         profit_factor=report.profit_factor,
         max_drawdown_pct=report.max_drawdown_pct,
@@ -395,9 +415,9 @@ def print_top_results(df: pd.DataFrame, top_n: int = 15) -> None:
 
     top = df.head(top_n)
 
-    print("\n" + "═" * 160)
+    print("\n" + "═" * 180)
     print("ТОП РЕЗУЛЬТАТОВ ОПТИМИЗАЦИИ")
-    print("═" * 160)
+    print("═" * 180)
     print(
         f"{'№':<3} "
         f"{'Score':<8} "
@@ -405,9 +425,8 @@ def print_top_results(df: pd.DataFrame, top_n: int = 15) -> None:
         f"{'Spread':<10} "
         f"{'Slope':<7} "
         f"{'SL':<8} "
-        f"{'TP':<8} "
-        f"{'HTF':<6} "
-        f"{'SlowPx':<8} "
+        f"{'Trail':<7} "
+        f"{'BE':<6} "
         f"{'Return %':<10} "
         f"{'PF':<8} "
         f"{'DD %':<8} "
@@ -415,7 +434,7 @@ def print_top_results(df: pd.DataFrame, top_n: int = 15) -> None:
         f"{'WR %':<8} "
         f"{'Sharpe':<8}"
     )
-    print("─" * 160)
+    print("─" * 180)
 
     for i, row in top.iterrows():
         print(
@@ -425,9 +444,8 @@ def print_top_results(df: pd.DataFrame, top_n: int = 15) -> None:
             f"{row['min_ema_spread_pct']:<10.4f} "
             f"{int(row['slope_lookback']):<7} "
             f"{row['stop_loss_pct']:<8.3f} "
-            f"{row['take_profit_pct']:<8.3f} "
-            f"{str(bool(row['soft_htf_filter'])):<6} "
-            f"{str(bool(row['require_price_above_slow_for_long'])):<8} "
+            f"{row['atr_trailing_mult']:<7.1f} "
+            f"{row['atr_breakeven_trigger']:<6.1f} "
             f"{row['total_return_pct']:<10.2f} "
             f"{row['profit_factor']:<8.2f} "
             f"{row['max_drawdown_pct']:<8.2f} "
@@ -436,7 +454,7 @@ def print_top_results(df: pd.DataFrame, top_n: int = 15) -> None:
             f"{row['sharpe_ratio']:<8.2f}"
         )
 
-    print("═" * 160)
+    print("═" * 180)
 
     best = top.iloc[0]
     print("\nЛУЧШАЯ КОНФИГУРАЦИЯ:")
@@ -449,6 +467,8 @@ def print_top_results(df: pd.DataFrame, top_n: int = 15) -> None:
     print(f"  soft_htf_filter                    = {bool(best['soft_htf_filter'])}")
     print(f"  require_price_above_slow_for_long  = {bool(best['require_price_above_slow_for_long'])}")
     print(f"  require_price_below_slow_for_short = {bool(best['require_price_below_slow_for_short'])}")
+    print(f"  atr_trailing_mult                  = {best['atr_trailing_mult']}")
+    print(f"  atr_breakeven_trigger              = {best['atr_breakeven_trigger']}")
     print(f"  total_return_pct                   = {best['total_return_pct']:.2f}%")
     print(f"  profit_factor                      = {best['profit_factor']:.2f}")
     print(f"  max_drawdown_pct                   = {best['max_drawdown_pct']:.2f}%")

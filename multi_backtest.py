@@ -60,11 +60,11 @@ def shift_df_window(df: pd.DataFrame, candles_needed: int, window_index: int) ->
 
 
 def load_symbol_history(
-    exchange: BybitExchange,
-    symbol: str,
-    interval: str,
-    needed_candles: int,
-    multiplier: int = 3,
+        exchange: BybitExchange,
+        symbol: str,
+        interval: str,
+        needed_candles: int,
+        multiplier: int = 3,
 ) -> pd.DataFrame:
     total_needed = needed_candles * multiplier
     return load_full_history(
@@ -76,10 +76,10 @@ def load_symbol_history(
 
 
 def load_symbol_htf_history(
-    exchange: BybitExchange,
-    symbol: str,
-    needed_hours: int,
-    multiplier: int = 3,
+        exchange: BybitExchange,
+        symbol: str,
+        needed_hours: int,
+        multiplier: int = 3,
 ) -> pd.DataFrame:
     total_needed = needed_hours * multiplier
     return load_full_history(
@@ -112,14 +112,14 @@ def align_htf_window(htf_df: pd.DataFrame, ltf_window: pd.DataFrame) -> pd.DataF
 
 
 def run_single_backtest(
-    exchange: BybitExchange,
-    symbol: str,
-    window_index: int,
-    window_name: str,
+        exchange: BybitExchange,
+        symbol: str,
+        window_index: int,
+        window_name: str,
 ) -> Optional[SymbolBacktestResult]:
     cfg = Config.trading
     bt_cfg = Config.backtest
-    backtester = Backtester()
+    backtester = Backtester(symbol=symbol)
 
     candles_per_day = (24 * 60) // int(cfg.interval)
     needed_candles = candles_per_day * bt_cfg.days
@@ -251,7 +251,7 @@ def print_summary(df: pd.DataFrame) -> None:
 
 
 def main() -> None:
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "TRXUSDT"]
+    symbols = ["BTCUSDT", "ETHUSDT", "TRXUSDT", "HYPEUSDT", "RENDERUSDT"]
     windows = [
         (0, "last_90d"),
         (1, "prev_90d"),

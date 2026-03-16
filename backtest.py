@@ -64,17 +64,17 @@ class BacktestReport:
         print("═" * 55)
 
         strong = (
-            self.total_return_pct > 5
-            and self.profit_factor > 1.5
-            and self.max_drawdown_pct < 10
-            and self.total_trades >= 20
+                self.total_return_pct > 5
+                and self.profit_factor > 1.5
+                and self.max_drawdown_pct < 10
+                and self.total_trades >= 20
         )
 
         acceptable = (
-            self.total_return_pct > 0
-            and self.profit_factor > 1.2
-            and self.max_drawdown_pct < 15
-            and self.total_trades >= 10
+                self.total_return_pct > 0
+                and self.profit_factor > 1.2
+                and self.max_drawdown_pct < 15
+                and self.total_trades >= 10
         )
 
         if strong:
@@ -89,11 +89,17 @@ class BacktestReport:
 
 
 class Backtester:
-    def __init__(self):
+    def __init__(self, symbol: str = ""):
         self.cfg = Config.backtest
         self.strategy = EMAStrategy()
         self.risk_cfg = Config.risk
         self.trade_cfg = Config.trading
+        # Символ нужен для per-symbol параметров (trailing mult, breakeven и т.д.)
+        self.symbol = symbol or Config.trading.symbol
+
+    def _get_param(self, param: str):
+        """Получить параметр с учётом per-symbol override."""
+        return Config.get_symbol_param(self.symbol, param)
 
     def _update_trailing_stop(self, position: dict, row: pd.Series) -> None:
         if not Config.strategy.use_atr_trailing_stop:
@@ -103,7 +109,7 @@ class Backtester:
         if atr <= 0:
             return
 
-        mult = Config.strategy.atr_trailing_mult
+        mult = self._get_param("atr_trailing_mult")
 
         if position["side"] == "LONG":
             position["highest_close"] = max(position["highest_close"], float(row["close"]))
@@ -122,6 +128,51 @@ class Backtester:
                 position["trailing_stop"] = candidate
             else:
                 position["trailing_stop"] = min(position["trailing_stop"], candidate)
+
+    def _update_breakeven_stop(self, position: dict, row: pd.Series) -> None:
+        """
+        Перенести стоп в безубыток после прохождения N×ATR в нашу сторону.
+
+        Логика:
+          - Смотрим сколько ATR прошла цена от точки входа
+          - Если >= atr_breakeven_trigger → поднимаем floor стопа до entry_price
+          - Это не отменяет trailing stop — просто не даём уйти в минус
+            после того как позиция уже показала движение в нашу сторону
+
+        Эффект для ETH: часть из 52 маленьких убытков (-1.5%) становится 0%.
+        """
+        if not self._get_param("use_breakeven_stop"):
+            return
+        if position.get("breakeven_set"):
+            return  # уже установлен, не трогаем
+
+        atr = float(row.get("atr", 0))
+        if atr <= 0:
+            return
+
+        trigger_distance = atr * self._get_param("atr_breakeven_trigger")
+        entry = position["entry_price"]
+        price = float(row["close"])
+
+        if position["side"] == "LONG":
+            if price - entry >= trigger_distance:
+                # Поднимаем floor стопа до entry (но не выше trailing)
+                current_sl = position["stop_loss"]
+                position["stop_loss"] = max(current_sl, entry)
+                position["breakeven_set"] = True
+                log.debug(
+                    f"Breakeven установлен: entry={entry:.2f} "
+                    f"price={price:.2f} (+{price - entry:.2f} >= {trigger_distance:.2f})"
+                )
+        else:
+            if entry - price >= trigger_distance:
+                current_sl = position["stop_loss"]
+                position["stop_loss"] = min(current_sl, entry)
+                position["breakeven_set"] = True
+                log.debug(
+                    f"Breakeven установлен: entry={entry:.2f} "
+                    f"price={price:.2f} (-{entry - price:.2f} >= {trigger_distance:.2f})"
+                )
 
     def run(self, df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> BacktestReport:
         log.info(
@@ -235,10 +286,12 @@ class Backtester:
                     "trailing_stop": None,
                     "highest_close": price,
                     "lowest_close": price,
+                    "breakeven_set": False,
                 }
                 continue
 
             if position is not None:
+                self._update_breakeven_stop(position, row)
                 self._update_trailing_stop(position, row)
 
         return self._build_report(trades, balance, equity_curve)
@@ -257,10 +310,10 @@ class Backtester:
         return raw_pnl - total_commission
 
     def _build_report(
-        self,
-        trades: list[Trade],
-        final_balance: float,
-        equity_curve: list[float],
+            self,
+            trades: list[Trade],
+            final_balance: float,
+            equity_curve: list[float],
     ) -> BacktestReport:
         initial = self.cfg.initial_balance
 

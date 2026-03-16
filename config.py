@@ -81,12 +81,40 @@ class StrategyConfig:
     # ATR / volatility
     atr_period: int = 14
     use_volatility_filter: bool = True
-    min_atr_pct: float = 0.0035  # 0.35%
+    min_atr_pct: float = 0.0035
 
     # Выходы
     use_ema_exit: bool = False
     use_atr_trailing_stop: bool = True
     atr_trailing_mult: float = 2.5
+
+    # Breakeven stop: после прохождения N×ATR переносим стоп в безубыток.
+    # Зачем: 52 убыточных ETH-сделки с avg -1.5% → часть станет 0%.
+    # Механизм: как только цена прошла atr_breakeven_trigger × ATR в нашу
+    # сторону — стоп переносится на entry_price (без комиссии, т.к. позиция
+    # уже "бесплатна"). Это не мешает trailing stop — просто поднимает пол.
+    use_breakeven_stop: bool = True
+    atr_breakeven_trigger: float = 1.0  # После 1× ATR прибыли → в безубыток
+
+
+@dataclass
+class SymbolOverride:
+    """
+    Переопределение параметров стратегии для конкретного символа.
+
+    Зачем: BTC (23 сделки, WR 39%) и ETH (62 сделки, WR 16%) ведут себя
+    по-разному. ETH более волатилен и требует более строгих фильтров входа,
+    чтобы сократить 62 → ~30 сделок с лучшим WR.
+
+    Используется только если задан для символа в symbol_overrides.
+    Незаданные поля берутся из StrategyConfig.
+    """
+    min_ema_spread_pct: float | None = None
+    min_atr_pct: float | None = None
+    atr_trailing_mult: float | None = None
+    atr_breakeven_trigger: float | None = None
+    long_rsi_limit: float | None = None
+    short_rsi_limit: float | None = None
 
 
 @dataclass
@@ -105,6 +133,7 @@ class TelegramConfig:
     chat_id: str = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", ""))
 
 
+
 class Config:
     exchange = ExchangeConfig()
     trading = TradingConfig()
@@ -112,3 +141,37 @@ class Config:
     strategy = StrategyConfig()
     backtest = BacktestConfig()
     telegram = TelegramConfig()
+
+    # Per-symbol переопределения параметров стратегии.
+    # ETH нужны более строгие фильтры входа: у него 62 сделки vs 23 у BTC.
+    # Цель: сократить ETH до ~30 сделок с WR ~30%+ при сохранении trailing-winners.
+    # Config — обычный класс (не @dataclass), поэтому инициализируем dict напрямую,
+    # без field(default_factory=...) — это работает только внутри @dataclass.
+    symbol_overrides: dict = {
+        "ETHUSDT": SymbolOverride(
+            min_ema_spread_pct=0.0012,
+            min_atr_pct=0.005,
+            atr_trailing_mult=3.0,
+            atr_breakeven_trigger=1.2,
+        ),
+        "BTCUSDT": SymbolOverride(
+            atr_trailing_mult=2.5,
+            atr_breakeven_trigger=1.0,
+        ),
+    }
+
+    @classmethod
+    def get_symbol_param(cls, symbol: str, param: str):
+        """
+        Получить параметр стратегии с учётом per-symbol переопределения.
+
+        Пример:
+            mult = Config.get_symbol_param("ETHUSDT", "atr_trailing_mult")
+            # вернёт 3.0 для ETH, 2.5 для BTC, дефолт для остальных
+        """
+        override = cls.symbol_overrides.get(symbol)
+        if override is not None:
+            val = getattr(override, param, None)
+            if val is not None:
+                return val
+        return getattr(cls.strategy, param)

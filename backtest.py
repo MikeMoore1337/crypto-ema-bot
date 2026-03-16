@@ -95,6 +95,34 @@ class Backtester:
         self.risk_cfg = Config.risk
         self.trade_cfg = Config.trading
 
+    def _update_trailing_stop(self, position: dict, row: pd.Series) -> None:
+        if not Config.strategy.use_atr_trailing_stop:
+            return
+
+        atr = float(row.get("atr", 0))
+        if atr <= 0:
+            return
+
+        mult = Config.strategy.atr_trailing_mult
+
+        if position["side"] == "LONG":
+            position["highest_close"] = max(position["highest_close"], float(row["close"]))
+            candidate = position["highest_close"] - atr * mult
+
+            if position["trailing_stop"] is None:
+                position["trailing_stop"] = candidate
+            else:
+                position["trailing_stop"] = max(position["trailing_stop"], candidate)
+
+        else:
+            position["lowest_close"] = min(position["lowest_close"], float(row["close"]))
+            candidate = position["lowest_close"] + atr * mult
+
+            if position["trailing_stop"] is None:
+                position["trailing_stop"] = candidate
+            else:
+                position["trailing_stop"] = min(position["trailing_stop"], candidate)
+
     def run(self, df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> BacktestReport:
         log.info(
             f"Бэктест на {len(df)} свечах | "
@@ -113,24 +141,31 @@ class Backtester:
 
         for i in range(start, len(df)):
             row = df.iloc[i]
-            price = row["close"]
-            low = row["low"]
-            high = row["high"]
+            price = float(row["close"])
+            low = float(row["low"])
+            high = float(row["high"])
 
-            # Проверяем только SL
             if position is not None:
                 exit_price = None
                 exit_reason = None
 
                 if position["side"] == "LONG":
-                    if low <= position["stop_loss"]:
-                        exit_price = position["stop_loss"]
-                        exit_reason = "SL"
+                    active_stop = position["stop_loss"]
+                    if position["trailing_stop"] is not None:
+                        active_stop = max(active_stop, position["trailing_stop"])
+
+                    if low <= active_stop:
+                        exit_price = active_stop
+                        exit_reason = "ATR-Trail/SL"
 
                 elif position["side"] == "SHORT":
-                    if high >= position["stop_loss"]:
-                        exit_price = position["stop_loss"]
-                        exit_reason = "SL"
+                    active_stop = position["stop_loss"]
+                    if position["trailing_stop"] is not None:
+                        active_stop = min(active_stop, position["trailing_stop"])
+
+                    if high >= active_stop:
+                        exit_price = active_stop
+                        exit_reason = "ATR-Trail/SL"
 
                 if exit_price is not None:
                     pnl = self._calculate_pnl(position, exit_price, commission)
@@ -178,6 +213,7 @@ class Backtester:
                 ))
                 equity_curve.append(balance)
                 position = None
+                continue
 
             if position is None and result.signal in (Signal.LONG, Signal.SHORT):
                 position_usdt = balance * self.trade_cfg.position_size_pct
@@ -185,7 +221,6 @@ class Backtester:
                 side = result.signal.value
 
                 sl_dist = price * self.risk_cfg.stop_loss_pct
-
                 if side == "LONG":
                     sl = price - sl_dist
                 else:
@@ -197,7 +232,14 @@ class Backtester:
                     "entry_time": row["timestamp"],
                     "qty": qty,
                     "stop_loss": sl,
+                    "trailing_stop": None,
+                    "highest_close": price,
+                    "lowest_close": price,
                 }
+                continue
+
+            if position is not None:
+                self._update_trailing_stop(position, row)
 
         return self._build_report(trades, balance, equity_curve)
 

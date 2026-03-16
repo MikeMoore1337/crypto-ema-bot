@@ -173,7 +173,7 @@ symbols = [
 
 ## 1. Клонировать репозиторий
 
-    git clone https://github.com/your_username/crypto-ema-bot.git
+    git clone https://github.com/MikeMoore1337/crypto-ema-bot.git
     cd crypto-ema-bot
 
 ------------------------------------------------------------------------

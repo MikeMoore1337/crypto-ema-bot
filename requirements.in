@@ -1,0 +1,17 @@
+# pip install pip-tools
+# pip-compile requirements.in
+# pip install -r requirements.txt
+# pip-compile --upgrade
+pybit
+pandas
+numpy
+pandas-ta
+python-dotenv
+requests
+colorlog
+ruff
+black
+mypy
+pandas-stubs
+pre-commit
+types-requests

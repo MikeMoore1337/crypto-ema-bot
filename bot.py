@@ -2,9 +2,9 @@
 bot.py - Основной торговый бот.
 
 Запуск:
-    python bot.py --mode live     # Торговля (сначала testnet в config!)
-    python bot.py --mode backtest # Бэктестинг на истории
-    python bot.py --mode paper    # Бумажная торговля (без реальных ордеров)
+    python bot.py --mode live
+    python bot.py --mode backtest
+    python bot.py --mode paper
 """
 
 import argparse
@@ -34,14 +34,11 @@ class TradingBot:
         self.strategy = EMAStrategy()
         self.risk_manager = RiskManager()
 
-        # Если symbols пустой - fallback на одиночный symbol
         self.symbols = self.cfg.symbols if self.cfg.symbols else [self.cfg.symbol]
 
-        # Состояние по каждому символу
         self.positions: dict[str, str | None] = {symbol: None for symbol in self.symbols}
         self.position_info: dict[str, dict] = {symbol: {} for symbol in self.symbols}
 
-        # Общий paper баланс
         self.paper_balance = 100.0
         self.paper_trades = []
 
@@ -72,6 +69,42 @@ class TradingBot:
             )
 
         threading.Thread(target=self.watchdog, daemon=True).start()
+
+    def _update_trailing_stop(self, symbol: str, signal_df: pd.DataFrame) -> None:
+        if not Config.strategy.use_atr_trailing_stop:
+            return
+
+        info = self.position_info.get(symbol, {})
+        if not info:
+            return
+
+        enriched = self.strategy.add_indicators(signal_df)
+        last = enriched.iloc[-1]
+
+        atr = float(last.get("atr", 0))
+        if atr <= 0:
+            return
+
+        close_price = float(last["close"])
+        mult = Config.strategy.atr_trailing_mult
+
+        if info["side"] == "LONG":
+            info["highest_close"] = max(info["highest_close"], close_price)
+            candidate = info["highest_close"] - atr * mult
+
+            if info["trailing_stop"] is None:
+                info["trailing_stop"] = candidate
+            else:
+                info["trailing_stop"] = max(info["trailing_stop"], candidate)
+
+        else:
+            info["lowest_close"] = min(info["lowest_close"], close_price)
+            candidate = info["lowest_close"] + atr * mult
+
+            if info["trailing_stop"] is None:
+                info["trailing_stop"] = candidate
+            else:
+                info["trailing_stop"] = min(info["trailing_stop"], candidate)
 
     def run(self) -> None:
         log.info("▶️  Запуск торгового цикла...")
@@ -144,18 +177,19 @@ class TradingBot:
 
         signal_df = df.iloc[:-1].copy()
         current_bar = df.iloc[-1]
-
         htf_signal_df = htf_df.iloc[:-1].copy()
 
+        if self.positions[symbol] is not None:
+            self._update_trailing_stop(symbol, signal_df)
+
         if self.mode == "paper" and self.positions[symbol] is not None:
-            if self._check_paper_exit_by_sl(symbol, current_bar):
+            if self._check_paper_exit_by_stops(symbol, current_bar):
                 return
 
         balance = self._get_balance()
         self.risk_manager.update_balance(balance)
 
         can_trade, reason = self.risk_manager.can_trade(balance)
-
         current_position = self.positions[symbol]
 
         result = self.strategy.get_signal(
@@ -201,6 +235,9 @@ class TradingBot:
                     "order_id": order_id,
                     "sl": params.stop_loss,
                     "tp": params.take_profit,
+                    "trailing_stop": None,
+                    "highest_close": price,
+                    "lowest_close": price,
                 }
 
                 log.info(
@@ -224,6 +261,9 @@ class TradingBot:
                 "qty": params.qty,
                 "sl": params.stop_loss,
                 "tp": params.take_profit,
+                "trailing_stop": None,
+                "highest_close": price,
+                "lowest_close": price,
             }
 
             log.info(
@@ -303,24 +343,35 @@ class TradingBot:
         self.positions[symbol] = None
         self.position_info[symbol] = {}
 
-    def _check_paper_exit_by_sl(self, symbol: str, bar: pd.Series) -> bool:
+    def _check_paper_exit_by_stops(self, symbol: str, bar: pd.Series) -> bool:
         info = self.position_info.get(symbol, {})
         if not info:
             return False
 
         side = info["side"]
         sl = info["sl"]
+        trailing = info.get("trailing_stop")
         high = float(bar["high"])
         low = float(bar["low"])
 
         if side == "LONG":
-            if low <= sl:
-                self._close_position(symbol, sl, exit_reason="SL")
+            active_stop = sl
+            if trailing is not None:
+                active_stop = max(active_stop, trailing)
+
+            if low <= active_stop:
+                reason = "ATR-Trail" if trailing is not None and active_stop == max(sl, trailing) and trailing > sl else "SL"
+                self._close_position(symbol, active_stop, exit_reason=reason)
                 return True
 
         elif side == "SHORT":
-            if high >= sl:
-                self._close_position(symbol, sl, exit_reason="SL")
+            active_stop = sl
+            if trailing is not None:
+                active_stop = min(active_stop, trailing)
+
+            if high >= active_stop:
+                reason = "ATR-Trail" if trailing is not None and active_stop == min(sl, trailing) and trailing < sl else "SL"
+                self._close_position(symbol, active_stop, exit_reason=reason)
                 return True
 
         return False

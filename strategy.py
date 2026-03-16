@@ -16,7 +16,6 @@ log = get_logger("strategy")
 
 
 class Signal(Enum):
-    """Торговый сигнал."""
     LONG = "LONG"
     SHORT = "SHORT"
     CLOSE = "CLOSE"
@@ -25,7 +24,6 @@ class Signal(Enum):
 
 @dataclass
 class StrategyResult:
-    """Результат анализа стратегии."""
     signal: Signal
     price: float
     fast_ema: float
@@ -36,10 +34,6 @@ class StrategyResult:
 
 
 class EMAStrategy:
-    """
-    EMA Crossover с фильтрацией.
-    """
-
     def __init__(self):
         cfg = Config.strategy
         self.fast_period = cfg.fast_ema_period
@@ -66,7 +60,13 @@ class EMAStrategy:
         self.require_price_above_slow_for_long = cfg.require_price_above_slow_for_long
         self.require_price_below_slow_for_short = cfg.require_price_below_slow_for_short
 
+        self.atr_period = cfg.atr_period
+        self.use_volatility_filter = cfg.use_volatility_filter
+        self.min_atr_pct = cfg.min_atr_pct
+
         self.use_ema_exit = cfg.use_ema_exit
+        self.use_atr_trailing_stop = cfg.use_atr_trailing_stop
+        self.atr_trailing_mult = cfg.atr_trailing_mult
 
     @staticmethod
     def _ema(series: pd.Series, period: int) -> pd.Series:
@@ -74,7 +74,6 @@ class EMAStrategy:
 
     @staticmethod
     def _rsi(series: pd.Series, period: int) -> pd.Series:
-        """RSI по методу Wilder."""
         delta = series.diff()
         gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
         loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
@@ -83,9 +82,6 @@ class EMAStrategy:
 
     @staticmethod
     def _adx(df: pd.DataFrame, period: int) -> pd.Series:
-        """
-        ADX - измеряет силу тренда.
-        """
         high = df["high"]
         low = df["low"]
         close = df["close"]
@@ -124,8 +120,22 @@ class EMAStrategy:
 
         return adx
 
+    @staticmethod
+    def _atr(df: pd.DataFrame, period: int) -> pd.Series:
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        prev_close = close.shift(1)
+
+        tr = pd.concat([
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+
+        return tr.ewm(alpha=1 / period, adjust=False).mean()
+
     def add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Добавить все индикаторы к датафрейму."""
         df = df.copy()
         close = df["close"]
 
@@ -134,6 +144,8 @@ class EMAStrategy:
         df["ema_htf"] = self._ema(close, self.htf_period)
         df["rsi"] = self._rsi(close, self.rsi_period)
         df["adx"] = self._adx(df, self.adx_period)
+        df["atr"] = self._atr(df, self.atr_period)
+        df["atr_pct"] = (df["atr"] / close.replace(0, np.nan)).fillna(0)
 
         bb_mid = close.rolling(self.bb_period).mean()
         bb_std = close.rolling(self.bb_period).std()
@@ -162,9 +174,6 @@ class EMAStrategy:
         current_position: Optional[str] = None,
         htf_df: Optional[pd.DataFrame] = None,
     ) -> StrategyResult:
-        """
-        Анализировать свечи и вернуть торговый сигнал.
-        """
         if len(df) < self.min_candles:
             price = float(df["close"].iloc[-1]) if not df.empty else 0.0
             return StrategyResult(
@@ -186,6 +195,7 @@ class EMAStrategy:
         htf_ema = float(last["ema_htf"])
         rsi = float(last["rsi"])
         adx = float(last["adx"])
+        atr_pct = float(last["atr_pct"])
         vol_ok = bool(last["vol_ok"])
         bb_ok = bool(last["bb_ok"])
         bb_width = float(last["bb_width"])
@@ -197,16 +207,14 @@ class EMAStrategy:
         ema_spread_pct = abs(fast_ema - slow_ema) / price if price else 0.0
 
         if htf_df is not None and len(htf_df) >= self.htf_period:
-            htf_df = htf_df.copy()
-            htf_df["ema_htf_filter"] = self._ema(htf_df["close"], self.htf_period)
-
+            htf_df = self.add_indicators(htf_df)
             htf_close = float(htf_df["close"].iloc[-1])
-            htf_ema_now = float(htf_df["ema_htf_filter"].iloc[-1])
+            htf_ema_now = float(htf_df["ema_htf"].iloc[-1])
 
             if len(htf_df) > lookback:
-                htf_ema_prev = float(htf_df["ema_htf_filter"].iloc[-1 - lookback])
+                htf_ema_prev = float(htf_df["ema_htf"].iloc[-1 - lookback])
             else:
-                htf_ema_prev = float(htf_df["ema_htf_filter"].iloc[0])
+                htf_ema_prev = float(htf_df["ema_htf"].iloc[0])
 
             if self.soft_htf_filter:
                 htf_bullish = htf_close > htf_ema_now
@@ -218,7 +226,6 @@ class EMAStrategy:
             htf_bullish = price > htf_ema
             htf_bearish = price < htf_ema
 
-        # --- НОВЫЙ ВЫХОД ПО EMA FAST ---
         if self.use_ema_exit:
             if current_position == "LONG" and price < fast_ema:
                 return StrategyResult(
@@ -241,28 +248,6 @@ class EMAStrategy:
                     adx=adx,
                     reason="EMA-exit: close > ema_fast -> закрываем SHORT",
                 )
-        else:
-            if current_position == "LONG" and crossover < 0:
-                return StrategyResult(
-                    signal=Signal.CLOSE,
-                    price=price,
-                    fast_ema=fast_ema,
-                    slow_ema=slow_ema,
-                    rsi=rsi,
-                    adx=adx,
-                    reason="EMA: медвежье пересечение - закрываем LONG",
-                )
-
-            if current_position == "SHORT" and crossover > 0:
-                return StrategyResult(
-                    signal=Signal.CLOSE,
-                    price=price,
-                    fast_ema=fast_ema,
-                    slow_ema=slow_ema,
-                    rsi=rsi,
-                    adx=adx,
-                    reason="EMA: бычье пересечение - закрываем SHORT",
-                )
 
         if crossover > 0:
             filters = {
@@ -278,6 +263,9 @@ class EMAStrategy:
             if self.require_price_above_slow_for_long:
                 filters["Цена ниже slow EMA"] = price <= slow_ema
 
+            if self.use_volatility_filter:
+                filters["ATR волатильность мала"] = atr_pct < self.min_atr_pct
+
             failed = [name for name, blocked in filters.items() if blocked]
 
             if not failed:
@@ -290,13 +278,13 @@ class EMAStrategy:
                     adx=adx,
                     reason=(
                         f"LONG ✅ | ADX={adx:.1f} BB_w={bb_width:.3f} "
-                        f"RSI={rsi:.1f} spread={ema_spread_pct:.4f}"
+                        f"RSI={rsi:.1f} spread={ema_spread_pct:.4f} ATR%={atr_pct:.4f}"
                     ),
                 )
 
             log.debug(
                 f"LONG заблокирован: {', '.join(failed)} | "
-                f"ADX={adx:.1f} BB_w={bb_width:.3f} RSI={rsi:.1f}"
+                f"ADX={adx:.1f} BB_w={bb_width:.3f} RSI={rsi:.1f} ATR%={atr_pct:.4f}"
             )
 
         if crossover < 0:
@@ -313,6 +301,9 @@ class EMAStrategy:
             if self.require_price_below_slow_for_short:
                 filters["Цена выше slow EMA"] = price >= slow_ema
 
+            if self.use_volatility_filter:
+                filters["ATR волатильность мала"] = atr_pct < self.min_atr_pct
+
             failed = [name for name, blocked in filters.items() if blocked]
 
             if not failed:
@@ -325,13 +316,13 @@ class EMAStrategy:
                     adx=adx,
                     reason=(
                         f"SHORT ✅ | ADX={adx:.1f} BB_w={bb_width:.3f} "
-                        f"RSI={rsi:.1f} spread={ema_spread_pct:.4f}"
+                        f"RSI={rsi:.1f} spread={ema_spread_pct:.4f} ATR%={atr_pct:.4f}"
                     ),
                 )
 
             log.debug(
                 f"SHORT заблокирован: {', '.join(failed)} | "
-                f"ADX={adx:.1f} BB_w={bb_width:.3f} RSI={rsi:.1f}"
+                f"ADX={adx:.1f} BB_w={bb_width:.3f} RSI={rsi:.1f} ATR%={atr_pct:.4f}"
             )
 
         return StrategyResult(
@@ -341,5 +332,8 @@ class EMAStrategy:
             slow_ema=slow_ema,
             rsi=rsi,
             adx=adx,
-            reason=f"HOLD | EMA {fast_ema:.0f}/{slow_ema:.0f} ADX={adx:.1f} RSI={rsi:.1f}",
+            reason=(
+                f"HOLD | EMA {fast_ema:.0f}/{slow_ema:.0f} "
+                f"ADX={adx:.1f} RSI={rsi:.1f} ATR%={atr_pct:.4f}"
+            ),
         )

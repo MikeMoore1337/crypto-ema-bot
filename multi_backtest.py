@@ -251,7 +251,7 @@ def print_summary(df: pd.DataFrame) -> None:
 
 
 def main() -> None:
-    symbols = ["BTCUSDT", "ETHUSDT", "TRXUSDT", "HYPEUSDT", "RENDERUSDT"]
+    symbols = ["BTCUSDT", "ETHUSDT"]
     windows = [
         (0, "last_90d"),
         (1, "prev_90d"),

@@ -282,7 +282,7 @@ def evaluate_combination(
     configure_optimize_log_levels()
     set_config_values(**params)
 
-    backtester = Backtester()
+    backtester = Backtester(symbol=Config.trading.symbol)
     report = backtester.run(
         df.copy(),
         htf_df.copy() if htf_df is not None else None,

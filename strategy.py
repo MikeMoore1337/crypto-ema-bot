@@ -34,8 +34,24 @@ class StrategyResult:
 
 
 class EMAStrategy:
-    def __init__(self):
+    def __init__(self, symbol: str = ""):
+        """
+        Args:
+            symbol: Торговый символ (напр. "ETHUSDT").
+                    Если передан — per-symbol параметры из Config.symbol_overrides
+                    заменяют глобальные значения из StrategyConfig.
+                    Это позволяет ETH иметь строже min_ema_spread_pct/min_atr_pct
+                    не затрагивая BTC и не дублируя стратегию.
+        """
         cfg = Config.strategy
+        self.symbol = symbol
+
+        def _p(param: str):
+            """Получить параметр с учётом per-symbol override."""
+            if symbol:
+                return Config.get_symbol_param(symbol, param)
+            return getattr(cfg, param)
+
         self.fast_period = cfg.fast_ema_period
         self.slow_period = cfg.slow_ema_period
         self.htf_period = cfg.htf_ema_period
@@ -51,22 +67,21 @@ class EMAStrategy:
         self.volume_period = cfg.volume_period
         self.min_candles = cfg.min_candles
 
-        self.long_rsi_limit = cfg.long_rsi_limit
-        self.short_rsi_limit = cfg.short_rsi_limit
-        self.min_ema_spread_pct = cfg.min_ema_spread_pct
         self.slope_lookback = cfg.slope_lookback
-
         self.soft_htf_filter = cfg.soft_htf_filter
         self.require_price_above_slow_for_long = cfg.require_price_above_slow_for_long
         self.require_price_below_slow_for_short = cfg.require_price_below_slow_for_short
-
         self.atr_period = cfg.atr_period
         self.use_volatility_filter = cfg.use_volatility_filter
-        self.min_atr_pct = cfg.min_atr_pct
-
         self.use_ema_exit = cfg.use_ema_exit
         self.use_atr_trailing_stop = cfg.use_atr_trailing_stop
-        self.atr_trailing_mult = cfg.atr_trailing_mult
+
+        # Per-symbol параметры: читаются через _p() — берут override если есть
+        self.long_rsi_limit = _p("long_rsi_limit")
+        self.short_rsi_limit = _p("short_rsi_limit")
+        self.min_ema_spread_pct = _p("min_ema_spread_pct")  # ETH: 0.0012, BTC: 0.0006
+        self.min_atr_pct = _p("min_atr_pct")  # ETH: 0.005,  BTC: 0.0035
+        self.atr_trailing_mult = _p("atr_trailing_mult")  # ETH: 3.0,    BTC: 2.5
 
     @staticmethod
     def _ema(series: pd.Series, period: int) -> pd.Series:
@@ -169,10 +184,10 @@ class EMAStrategy:
         return df
 
     def get_signal(
-        self,
-        df: pd.DataFrame,
-        current_position: Optional[str] = None,
-        htf_df: Optional[pd.DataFrame] = None,
+            self,
+            df: pd.DataFrame,
+            current_position: Optional[str] = None,
+            htf_df: Optional[pd.DataFrame] = None,
     ) -> StrategyResult:
         if len(df) < self.min_candles:
             price = float(df["close"].iloc[-1]) if not df.empty else 0.0

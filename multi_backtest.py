@@ -60,11 +60,11 @@ def shift_df_window(df: pd.DataFrame, candles_needed: int, window_index: int) ->
 
 
 def load_symbol_history(
-        exchange: BybitExchange,
-        symbol: str,
-        interval: str,
-        needed_candles: int,
-        multiplier: int = 3,
+    exchange: BybitExchange,
+    symbol: str,
+    interval: str,
+    needed_candles: int,
+    multiplier: int = 3,
 ) -> pd.DataFrame:
     total_needed = needed_candles * multiplier
     return load_full_history(
@@ -76,10 +76,10 @@ def load_symbol_history(
 
 
 def load_symbol_htf_history(
-        exchange: BybitExchange,
-        symbol: str,
-        needed_hours: int,
-        multiplier: int = 3,
+    exchange: BybitExchange,
+    symbol: str,
+    needed_hours: int,
+    multiplier: int = 3,
 ) -> pd.DataFrame:
     total_needed = needed_hours * multiplier
     return load_full_history(
@@ -112,10 +112,10 @@ def align_htf_window(htf_df: pd.DataFrame, ltf_window: pd.DataFrame) -> pd.DataF
 
 
 def run_single_backtest(
-        exchange: BybitExchange,
-        symbol: str,
-        window_index: int,
-        window_name: str,
+    exchange: BybitExchange,
+    symbol: str,
+    window_index: int,
+    window_name: str,
 ) -> Optional[SymbolBacktestResult]:
     cfg = Config.trading
     bt_cfg = Config.backtest
@@ -250,12 +250,48 @@ def print_summary(df: pd.DataFrame) -> None:
     print("═" * 90)
 
 
+def print_active_params() -> None:
+    """
+    Показать активные параметры для каждого символа перед запуском.
+    Помогает быстро диагностировать почему символ даёт 0 сделок.
+    """
+    from strategy import EMAStrategy
+
+    symbols_to_check = list(Config.symbol_overrides.keys()) or ["BTCUSDT"]
+    print("\n" + "─" * 75)
+    print("АКТИВНЫЕ ПАРАМЕТРЫ СТРАТЕГИИ ПО СИМВОЛАМ")
+    print("─" * 75)
+    print(
+        f"{'Symbol':<12} "
+        f"{'spread':<10} "
+        f"{'atr_pct':<10} "
+        f"{'trailing':<10} "
+        f"{'breakeven':<10} "
+        f"{'rsi L/S':<10}"
+    )
+    print("─" * 75)
+    for sym in symbols_to_check:
+        s = EMAStrategy(symbol=sym)
+        print(
+            f"{sym:<12} "
+            f"{s.min_ema_spread_pct:<10.4f} "
+            f"{s.min_atr_pct:<10.4f} "
+            f"{s.atr_trailing_mult:<10.1f} "
+            f"{Config.get_symbol_param(sym, 'atr_breakeven_trigger'):<10.1f} "
+            f"{s.long_rsi_limit:.0f}/{s.short_rsi_limit:.0f}"
+        )
+    print("─" * 75 + "\n")
+
+
 def main() -> None:
     symbols = ["BTCUSDT", "ETHUSDT"]
     windows = [
         (0, "last_90d"),
         (1, "prev_90d"),
     ]
+
+    # Показываем параметры до запуска — сразу видно если что-то не так
+    print_active_params()
 
     exchange = BybitExchange()
     results: list[dict] = []
@@ -269,6 +305,13 @@ def main() -> None:
                 window_name=window_name,
             )
             if result is not None:
+                # Предупреждение если символ дал 0 сделок — помогает диагностировать фильтры
+                if result.total_trades == 0:
+                    log.warning(
+                        f"⚠️  {symbol} | {window_name}: 0 сделок — "
+                        f"проверь min_atr_pct={Config.get_symbol_param(symbol, 'min_atr_pct'):.4f} "
+                        f"и min_ema_spread_pct={Config.get_symbol_param(symbol, 'min_ema_spread_pct'):.4f}"
+                    )
                 results.append(asdict(result))
 
     df = pd.DataFrame(results)
@@ -276,8 +319,11 @@ def main() -> None:
         print("Не удалось получить результаты")
         return
 
-    print_summary(df)
+    # Фильтруем строки с 0 сделок из итоговой таблицы — они только мусорят
+    df_display = df[df["total_trades"] > 0].copy()
+    print_summary(df_display)
 
+    # В CSV сохраняем все, включая нулевые — для отладки
     out_file = "multi_backtest_results.csv"
     df.to_csv(out_file, index=False)
     print(f"\nРезультаты сохранены в: {out_file}")

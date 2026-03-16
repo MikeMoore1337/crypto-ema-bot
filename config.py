@@ -143,10 +143,6 @@ class Config:
     telegram = TelegramConfig()
 
     # Per-symbol переопределения параметров стратегии.
-    # ETH нужны более строгие фильтры входа: у него 62 сделки vs 23 у BTC.
-    # Цель: сократить ETH до ~30 сделок с WR ~30%+ при сохранении trailing-winners.
-    # Config — обычный класс (не @dataclass), поэтому инициализируем dict напрямую,
-    # без field(default_factory=...) — это работает только внутри @dataclass.
     symbol_overrides: dict = {
         "ETHUSDT": SymbolOverride(
             min_ema_spread_pct=0.0012,
@@ -155,6 +151,8 @@ class Config:
             atr_breakeven_trigger=1.2,
         ),
         "BTCUSDT": SymbolOverride(
+            min_ema_spread_pct=0.0004,
+            min_atr_pct=0.0015,
             atr_trailing_mult=2.5,
             atr_breakeven_trigger=1.0,
         ),

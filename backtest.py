@@ -91,11 +91,11 @@ class BacktestReport:
 class Backtester:
     def __init__(self, symbol: str = ""):
         self.cfg = Config.backtest
-        self.strategy = EMAStrategy()
         self.risk_cfg = Config.risk
         self.trade_cfg = Config.trading
-        # Символ нужен для per-symbol параметров (trailing mult, breakeven и т.д.)
         self.symbol = symbol or Config.trading.symbol
+        # Стратегия создаётся с символом — применяет per-symbol параметры
+        self.strategy = EMAStrategy(symbol=self.symbol)
 
     def _get_param(self, param: str):
         """Получить параметр с учётом per-symbol override."""

@@ -31,10 +31,26 @@ class TradingBot:
         self.mode = mode
         self.cfg = Config.trading
         self.exchange = BybitExchange()
-        self.strategy = EMAStrategy()
         self.risk_manager = RiskManager()
 
         self.symbols = self.cfg.symbols if self.cfg.symbols else [self.cfg.symbol]
+
+        # Создаём отдельную стратегию для каждого символа —
+        # каждая применяет свои per-symbol параметры (spread, ATR, trailing)
+        self.strategies: dict[str, EMAStrategy] = {
+            symbol: EMAStrategy(symbol=symbol) for symbol in self.symbols
+        }
+        # Обратная совместимость: self.strategy указывает на стратегию первого символа
+        self.strategy = self.strategies[self.symbols[0]]
+
+        # Логируем активные параметры каждой стратегии
+        for sym, strat in self.strategies.items():
+            log.info(
+                f"{sym} стратегия: spread={strat.min_ema_spread_pct:.4f} "
+                f"atr_pct={strat.min_atr_pct:.4f} "
+                f"trailing={strat.atr_trailing_mult:.1f}× "
+                f"rsi={strat.long_rsi_limit:.0f}/{strat.short_rsi_limit:.0f}"
+            )
 
         self.positions: dict[str, str | None] = {symbol: None for symbol in self.symbols}
         self.position_info: dict[str, dict] = {symbol: {} for symbol in self.symbols}
@@ -64,7 +80,7 @@ class TradingBot:
 
         if self.telegram:
             self.telegram.send(
-                f"🤖 Бот запущен | режим: {mode.upper()} | "
+                f"🤖 Бот v2 запущен | режим: {mode.upper()} | "
                 f"symbols: {symbols_str} | TF: {self.cfg.interval}m"
             )
 
@@ -79,7 +95,7 @@ class TradingBot:
         if not info:
             return
 
-        enriched = self.strategy.add_indicators(signal_df)
+        enriched = self.strategies[symbol].add_indicators(signal_df)
         last = enriched.iloc[-1]
 
         atr = float(last.get("atr", 0))
@@ -127,7 +143,7 @@ class TradingBot:
         if not info or info.get("breakeven_set"):
             return
 
-        enriched = self.strategy.add_indicators(signal_df)
+        enriched = self.strategies[symbol].add_indicators(signal_df)
         last = enriched.iloc[-1]
 
         atr = float(last.get("atr", 0))
@@ -244,7 +260,7 @@ class TradingBot:
         can_trade, reason = self.risk_manager.can_trade(balance)
         current_position = self.positions[symbol]
 
-        result = self.strategy.get_signal(
+        result = self.strategies[symbol].get_signal(
             signal_df,
             current_position,
             htf_signal_df,
@@ -300,7 +316,7 @@ class TradingBot:
 
                 if self.telegram:
                     self.telegram.send(
-                        f"🚀 {symbol} {side}\n"
+                        f"Бот v2🚀 {symbol} {side}\n"
                         f"Цена: {price:.2f}\n"
                         f"SL: {params.stop_loss:.2f}\n"
                         f"Qty: {params.qty:.4f}"
@@ -327,7 +343,7 @@ class TradingBot:
 
             if self.telegram:
                 self.telegram.send(
-                    f"🚀 {symbol} {side}\n"
+                    f"Бот v2 🚀 {symbol} {side}\n"
                     f"Цена: {price:.2f}\n"
                     f"SL: {params.stop_loss:.2f}\n"
                     f"Qty: {params.qty:.4f}"
@@ -350,7 +366,7 @@ class TradingBot:
 
             if self.telegram:
                 self.telegram.send(
-                    f"❌ {symbol} | Закрыта {position_side}\n"
+                    f"Бот v2 ❌ {symbol} | Закрыта {position_side}\n"
                     f"Цена выхода: {price:.2f}\n"
                     f"Причина: {exit_reason}"
                 )
@@ -387,7 +403,7 @@ class TradingBot:
 
             if self.telegram:
                 self.telegram.send(
-                    f"❌ {symbol} | Закрыта {position_side}\n"
+                    f"Бот v2 ❌ {symbol} | Закрыта {position_side}\n"
                     f"Цена выхода: {price:.2f}\n"
                     f"Причина: {exit_reason}\n"
                     f"P&L: {net_pnl:+.4f}$\n"

@@ -91,7 +91,6 @@ BYBIT_API_KEY=xxx
 BYBIT_API_SECRET=xxx
 TELEGRAM_BOT_TOKEN=xxx
 TELEGRAM_CHAT_ID=xxx
-BOT_NAME=🔵 Bot-1
 ```
 
 ---
@@ -175,28 +174,6 @@ symbol_overrides = {
 - открытие и закрытие позиции
 - ежедневный отчёт
 - watchdog (бот завис)
-
-### Несколько инстансов на одном Telegram боте
-
-Каждый инстанс добавляет свой префикс через `BOT_NAME` в `.env`:
-
-```env
-# Инстанс 1
-BOT_NAME=🔵 Bot-1
-
-# Инстанс 2
-BOT_NAME=🟢 Bot-2
-```
-
-Сообщения в чате будут выглядеть так:
-
-```
-[🔵 Bot-1]
-🚀 BTCUSDT LONG
-Цена: 84250.00
-SL: 82500.00
-```
-
 ---
 
 ## 🖥️ Запуск на сервере (systemd)

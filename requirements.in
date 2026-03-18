@@ -1,5 +1,6 @@
 # pip install pip-tools
 # pip-compile requirements.in
+# pip install -r requirements.txt
 # pip-compile --upgrade
 pybit
 pandas

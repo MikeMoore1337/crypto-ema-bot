@@ -135,7 +135,7 @@ class RiskManager:
         side: str,
         min_qty: float = 0.001,
         qty_step: float = 0.001,
-        signal_context: Optional[dict] = None,
+        signal_context: dict | None = None,
     ) -> PositionParams:
         """
         Рассчитать параметры позиции.

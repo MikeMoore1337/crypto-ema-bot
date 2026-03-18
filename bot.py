@@ -42,6 +42,9 @@ class TradingBot:
         self.paper_balance = 100.0
         self.paper_trades: list[dict] = []
 
+        # Счётчики свечей после последнего закрытия позиции — для логики reentry
+        self.bars_since_close: dict[str, int] = {symbol: 999 for symbol in self.symbols}
+
         self.last_report_day: date | None = None
         self.last_heartbeat = time.time()
 
@@ -84,6 +87,8 @@ class TradingBot:
         close_price = float(last["close"])
         mult = Config.strategy.atr_trailing_mult
 
+        entry_price = info.get("entry", 0.0)
+
         if info["side"] == "LONG":
             info["highest_close"] = max(info["highest_close"], close_price)
             candidate = info["highest_close"] - atr * mult
@@ -93,6 +98,12 @@ class TradingBot:
             else:
                 info["trailing_stop"] = max(info["trailing_stop"], candidate)
 
+            # Breakeven: как только цена прошла trigger×ATR вверх → стоп минимум в точке входа
+            if Config.strategy.use_breakeven_stop and entry_price > 0:
+                trigger = Config.strategy.atr_breakeven_trigger
+                if close_price >= entry_price + atr * trigger:
+                    info["sl"] = max(info["sl"], entry_price)
+
         else:
             info["lowest_close"] = min(info["lowest_close"], close_price)
             candidate = info["lowest_close"] + atr * mult
@@ -101,6 +112,12 @@ class TradingBot:
                 info["trailing_stop"] = candidate
             else:
                 info["trailing_stop"] = min(info["trailing_stop"], candidate)
+
+            # Breakeven: как только цена прошла trigger×ATR вниз → стоп максимум в точке входа
+            if Config.strategy.use_breakeven_stop and entry_price > 0:
+                trigger = Config.strategy.atr_breakeven_trigger
+                if close_price <= entry_price - atr * trigger:
+                    info["sl"] = min(info["sl"], entry_price)
 
     def run(self) -> None:
         log.info("▶️  Запуск торгового цикла...")
@@ -200,14 +217,30 @@ class TradingBot:
 
         exec_price = float(current_bar["open"])
 
+        # Увеличиваем счётчик свечей с последнего закрытия
+        if self.positions[symbol] is None:
+            self.bars_since_close[symbol] = self.bars_since_close.get(symbol, 999) + 1
+
         if result.signal == Signal.CLOSE and current_position is not None:
             self._close_position(symbol, exec_price, exit_reason="Signal")
+            self.bars_since_close[symbol] = 0
 
         elif result.signal in (Signal.LONG, Signal.SHORT) and current_position is None:
             if not can_trade:
                 log.warning(f"{symbol}: ⛔ Торговля заблокирована: {reason}")
                 return
             self._open_position(symbol, result.signal.value, exec_price, balance, adx=result.adx)
+
+        # Повторный вход (reentry) — если нет кроссовера, но тренд продолжается
+        elif (
+            result.signal == Signal.HOLD
+            and current_position is None
+            and can_trade
+            and Config.strategy.allow_trend_reentry
+            and self.bars_since_close.get(symbol, 999)
+            >= Config.strategy.reentry_min_bars_after_close
+        ):
+            self._try_reentry(symbol, signal_df, htf_signal_df, exec_price, balance)
 
     def _open_position(
         self, symbol: str, side: str, price: float, balance: float, adx: float = 0.0
@@ -370,6 +403,7 @@ class TradingBot:
                     else "SL"
                 )
                 self._close_position(symbol, active_stop, exit_reason=reason)
+                self.bars_since_close[symbol] = 0
                 return True
 
         elif side == "SHORT":
@@ -384,9 +418,82 @@ class TradingBot:
                     else "SL"
                 )
                 self._close_position(symbol, active_stop, exit_reason=reason)
+                self.bars_since_close[symbol] = 0
                 return True
 
         return False
+
+    def _try_reentry(
+        self,
+        symbol: str,
+        signal_df: pd.DataFrame,
+        htf_df: pd.DataFrame,
+        exec_price: float,
+        balance: float,
+    ) -> None:
+        """
+        Повторный вход в тренд без нового кроссовера EMA.
+
+        Условия для SHORT reentry:
+          - fast EMA < slow EMA (тренд вниз)
+          - HTF подтверждает медвежий тренд
+          - ADX выше порога (тренд сильный)
+          - ATR выше минимального порога (достаточная волатильность)
+          - RSI не перепродан (> short_rsi_limit)
+
+        Зеркально для LONG reentry.
+        """
+        df = self.strategy.add_indicators(signal_df)
+        last = df.iloc[-1]
+
+        fast_ema = float(last["ema_fast"])
+        slow_ema = float(last["ema_slow"])
+        adx = float(last["adx"])
+        rsi = float(last["rsi"])
+        atr_pct = float(last["atr_pct"])
+
+        cfg = Config.strategy
+
+        # Определяем текущее направление тренда по EMA
+        trend_short = fast_ema < slow_ema
+        trend_long = fast_ema > slow_ema
+
+        # HTF фильтр
+        htf_bearish = False
+        htf_bullish = False
+        if len(htf_df) >= cfg.htf_ema_period:
+            htf_enriched = self.strategy.add_indicators(htf_df)
+            htf_close = float(htf_enriched["close"].iloc[-1])
+            htf_ema_now = float(htf_enriched["ema_htf"].iloc[-1])
+            htf_bearish = htf_close < htf_ema_now
+            htf_bullish = htf_close > htf_ema_now
+
+        reentry_side = None
+
+        if (
+            trend_short
+            and htf_bearish
+            and adx >= cfg.adx_threshold
+            and atr_pct >= cfg.min_atr_pct
+            and rsi > cfg.short_rsi_limit
+        ):
+            reentry_side = "SHORT"
+
+        elif (
+            trend_long
+            and htf_bullish
+            and adx >= cfg.adx_threshold
+            and atr_pct >= cfg.min_atr_pct
+            and rsi < cfg.long_rsi_limit
+        ):
+            reentry_side = "LONG"
+
+        if reentry_side:
+            log.info(
+                f"{symbol}: 🔄 Reentry {reentry_side} | "
+                f"ADX={adx:.1f} RSI={rsi:.1f} ATR%={atr_pct:.4f}"
+            )
+            self._open_position(symbol, reentry_side, exec_price, balance, adx=adx)
 
     def _get_balance(self) -> float:
         if self.mode == "paper":

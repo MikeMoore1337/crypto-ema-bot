@@ -95,6 +95,15 @@ class StrategyConfig:
     use_atr_trailing_stop: bool = True
     atr_trailing_mult: float = 2.5
 
+    # Breakeven stop: после N×ATR прибыли стоп переносится в точку входа
+    use_breakeven_stop: bool = True
+    atr_breakeven_trigger: float = 1.0  # после 1×ATR в нашу сторону → стоп в безубыток
+
+    # Повторный вход в тренд без нового кроссовера (reentry)
+    # Позволяет войти заново если тренд продолжается после стоп-аута
+    allow_trend_reentry: bool = True
+    reentry_min_bars_after_close: int = 3  # ждать N свечей после закрытия перед reentry
+
 
 @dataclass
 class BacktestConfig:

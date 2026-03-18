@@ -26,13 +26,13 @@ import time
 # отключаем file logging ДО импорта модулей, которые создают логгеры
 os.environ["BOT_DISABLE_FILE_LOGGING"] = "1"
 
+import logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from itertools import product
 from multiprocessing import freeze_support
 from typing import Any
 
-import logging
 import pandas as pd
 
 from backtest import Backtester
@@ -100,21 +100,25 @@ def restore_config(snapshot: dict[str, Any]) -> None:
     Config.risk.stop_loss_pct = snapshot["stop_loss_pct"]
     Config.risk.take_profit_pct = snapshot["take_profit_pct"]
     Config.strategy.soft_htf_filter = snapshot["soft_htf_filter"]
-    Config.strategy.require_price_above_slow_for_long = snapshot["require_price_above_slow_for_long"]
-    Config.strategy.require_price_below_slow_for_short = snapshot["require_price_below_slow_for_short"]
+    Config.strategy.require_price_above_slow_for_long = snapshot[
+        "require_price_above_slow_for_long"
+    ]
+    Config.strategy.require_price_below_slow_for_short = snapshot[
+        "require_price_below_slow_for_short"
+    ]
 
 
 def set_config_values(
-        *,
-        long_rsi_limit: float,
-        short_rsi_limit: float,
-        min_ema_spread_pct: float,
-        slope_lookback: int,
-        stop_loss_pct: float,
-        take_profit_pct: float,
-        soft_htf_filter: bool,
-        require_price_above_slow_for_long: bool,
-        require_price_below_slow_for_short: bool,
+    *,
+    long_rsi_limit: float,
+    short_rsi_limit: float,
+    min_ema_spread_pct: float,
+    slope_lookback: int,
+    stop_loss_pct: float,
+    take_profit_pct: float,
+    soft_htf_filter: bool,
+    require_price_above_slow_for_long: bool,
+    require_price_below_slow_for_short: bool,
 ) -> None:
     Config.strategy.long_rsi_limit = long_rsi_limit
     Config.strategy.short_rsi_limit = short_rsi_limit
@@ -154,29 +158,29 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame | None]:
     htf_needed = htf_days * 24
 
     log.info("Загрузка часовых свечей для HTF фильтра...")
-    htf_df = load_full_history(
+    htf_df: pd.DataFrame | None = load_full_history(
         exchange=exchange,
         symbol=cfg.symbol,
         interval="60",
         needed_candles=htf_needed,
     )
 
-    if htf_df.empty:
+    if htf_df is not None and htf_df.empty:
         log.warning("HTF данные не загружены - будет fallback без полноценного HTF")
         htf_df = None
-    else:
+    elif htf_df is not None:
         log.info(f"Загружено {len(htf_df)} часовых свечей [1h]")
 
     return df, htf_df
 
 
 def compute_score(
-        *,
-        total_return_pct: float,
-        profit_factor: float,
-        max_drawdown_pct: float,
-        total_trades: int,
-        sharpe_ratio: float,
+    *,
+    total_return_pct: float,
+    profit_factor: float,
+    max_drawdown_pct: float,
+    total_trades: int,
+    sharpe_ratio: float,
 ) -> float:
     score = 0.0
 
@@ -215,14 +219,14 @@ def build_param_grid() -> list[dict[str, Any]]:
     grid: list[dict[str, Any]] = []
 
     for (
-            long_rsi,
-            short_rsi,
-            spread,
-            slope,
-            sl,
-            tp,
-            soft_htf,
-            price_filter,
+        long_rsi,
+        short_rsi,
+        spread,
+        slope,
+        sl,
+        tp,
+        soft_htf,
+        price_filter,
     ) in product(
         long_rsi_values,
         short_rsi_values,
@@ -238,25 +242,27 @@ def build_param_grid() -> list[dict[str, Any]]:
         if long_rsi <= short_rsi:
             continue
 
-        grid.append({
-            "long_rsi_limit": long_rsi,
-            "short_rsi_limit": short_rsi,
-            "min_ema_spread_pct": spread,
-            "slope_lookback": slope,
-            "stop_loss_pct": sl,
-            "take_profit_pct": tp,
-            "soft_htf_filter": soft_htf,
-            "require_price_above_slow_for_long": price_filter,
-            "require_price_below_slow_for_short": price_filter,
-        })
+        grid.append(
+            {
+                "long_rsi_limit": long_rsi,
+                "short_rsi_limit": short_rsi,
+                "min_ema_spread_pct": spread,
+                "slope_lookback": slope,
+                "stop_loss_pct": sl,
+                "take_profit_pct": tp,
+                "soft_htf_filter": soft_htf,
+                "require_price_above_slow_for_long": price_filter,
+                "require_price_below_slow_for_short": price_filter,
+            }
+        )
 
     return grid
 
 
 def evaluate_combination(
-        params: dict[str, Any],
-        df: pd.DataFrame,
-        htf_df: pd.DataFrame | None,
+    params: dict[str, Any],
+    df: pd.DataFrame,
+    htf_df: pd.DataFrame | None,
 ) -> dict[str, Any]:
     """
     Worker-функция для одного набора параметров.
@@ -336,8 +342,7 @@ def run_optimization_parallel(max_workers: int | None = None) -> pd.DataFrame:
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = [
-                executor.submit(evaluate_combination, params, df, htf_df)
-                for params in param_grid
+                executor.submit(evaluate_combination, params, df, htf_df) for params in param_grid
             ]
 
             for future in as_completed(futures):
@@ -368,10 +373,10 @@ def run_optimization_parallel(max_workers: int | None = None) -> pd.DataFrame:
             raise RuntimeError("Не удалось получить результаты оптимизации")
 
         filtered = result_df[
-            (result_df["profit_factor"] > 0.95) &
-            (result_df["max_drawdown_pct"] < 20.0) &
-            (result_df["total_trades"] >= 15)
-            ].copy()
+            (result_df["profit_factor"] > 0.95)
+            & (result_df["max_drawdown_pct"] < 20.0)
+            & (result_df["total_trades"] >= 15)
+        ].copy()
 
         if filtered.empty:
             log.warning("После фильтра не осталось результатов - показываю все.")
@@ -417,17 +422,17 @@ def print_top_results(df: pd.DataFrame, top_n: int = 15) -> None:
     )
     print("─" * 160)
 
-    for i, row in top.iterrows():
+    for idx, (_, row) in enumerate(top.iterrows(), start=1):
         print(
-            f"{i + 1:<3} "
+            f"{idx:<3} "
             f"{row['score']:<8.2f} "
             f"{row['long_rsi_limit']:.0f}/{row['short_rsi_limit']:.0f}{'':<5} "
             f"{row['min_ema_spread_pct']:<10.4f} "
             f"{int(row['slope_lookback']):<7} "
             f"{row['stop_loss_pct']:<8.3f} "
             f"{row['take_profit_pct']:<8.3f} "
-            f"{str(bool(row['soft_htf_filter'])):<6} "
-            f"{str(bool(row['require_price_above_slow_for_long'])):<8} "
+            f"{bool(row['soft_htf_filter'])!s:<6} "
+            f"{bool(row['require_price_above_slow_for_long'])!s:<8} "
             f"{row['total_return_pct']:<10.2f} "
             f"{row['profit_factor']:<8.2f} "
             f"{row['max_drawdown_pct']:<8.2f} "
@@ -447,8 +452,12 @@ def print_top_results(df: pd.DataFrame, top_n: int = 15) -> None:
     print(f"  stop_loss_pct                      = {best['stop_loss_pct']}")
     print(f"  take_profit_pct                    = {best['take_profit_pct']}")
     print(f"  soft_htf_filter                    = {bool(best['soft_htf_filter'])}")
-    print(f"  require_price_above_slow_for_long  = {bool(best['require_price_above_slow_for_long'])}")
-    print(f"  require_price_below_slow_for_short = {bool(best['require_price_below_slow_for_short'])}")
+    print(
+        f"  require_price_above_slow_for_long  = {bool(best['require_price_above_slow_for_long'])}"
+    )
+    print(
+        f"  require_price_below_slow_for_short = {bool(best['require_price_below_slow_for_short'])}"
+    )
     print(f"  total_return_pct                   = {best['total_return_pct']:.2f}%")
     print(f"  profit_factor                      = {best['profit_factor']:.2f}")
     print(f"  max_drawdown_pct                   = {best['max_drawdown_pct']:.2f}%")

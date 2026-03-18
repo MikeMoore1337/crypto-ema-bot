@@ -15,8 +15,7 @@ multi_backtest.py - Массовый бэктест стратегии по не
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from typing import Optional
+from dataclasses import asdict, dataclass
 
 import pandas as pd
 
@@ -108,7 +107,7 @@ def align_htf_window(htf_df: pd.DataFrame, ltf_window: pd.DataFrame) -> pd.DataF
 
     warmup_tail = before_start.tail(warmup_hours)
     result = pd.concat([warmup_tail, inside]).drop_duplicates("timestamp").reset_index(drop=True)
-    return result
+    return pd.DataFrame(result)
 
 
 def run_single_backtest(
@@ -116,7 +115,7 @@ def run_single_backtest(
     symbol: str,
     window_index: int,
     window_name: str,
-) -> Optional[SymbolBacktestResult]:
+) -> SymbolBacktestResult | None:
     cfg = Config.trading
     bt_cfg = Config.backtest
     backtester = Backtester()
@@ -213,14 +212,20 @@ def print_summary(df: pd.DataFrame) -> None:
 
     print("═" * 150)
 
-    grouped = df.groupby("symbol").agg({
-        "total_return_pct": "mean",
-        "profit_factor": "mean",
-        "max_drawdown_pct": "mean",
-        "total_trades": "sum",
-        "win_rate_pct": "mean",
-        "sharpe_ratio": "mean",
-    }).reset_index()
+    grouped = (
+        df.groupby("symbol")
+        .agg(
+            {
+                "total_return_pct": "mean",
+                "profit_factor": "mean",
+                "max_drawdown_pct": "mean",
+                "total_trades": "sum",
+                "win_rate_pct": "mean",
+                "sharpe_ratio": "mean",
+            }
+        )
+        .reset_index()
+    )
 
     print("\n" + "═" * 90)
     print("СРЕДНИЕ ПО СИМВОЛАМ")

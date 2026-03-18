@@ -4,6 +4,8 @@ telegram_notifier.py - Отправка уведомлений в Telegram.
 
 from __future__ import annotations
 
+import os
+
 import requests
 
 from logger import get_logger
@@ -14,10 +16,16 @@ log = get_logger("telegram")
 class TelegramNotifier:
     """Простой отправщик сообщений в Telegram Bot API."""
 
-    def __init__(self, token: str, chat_id: str):
+    def __init__(self, token: str, chat_id: str) -> None:
         self.token = token.strip()
         self.chat_id = str(chat_id).strip()
         self.url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        self.bot_name = os.getenv("BOT_NAME", "").strip()
+
+    def _format(self, text: str) -> str:
+        if self.bot_name:
+            return f"[{self.bot_name}]\n{text}"
+        return text
 
     def send(self, text: str) -> bool:
         """
@@ -36,15 +44,13 @@ class TelegramNotifier:
                 self.url,
                 json={
                     "chat_id": self.chat_id,
-                    "text": text,
+                    "text": self._format(text),
                 },
                 timeout=10,
             )
 
             if response.status_code != 200:
-                log.error(
-                    f"Telegram API вернул HTTP {response.status_code}: {response.text}"
-                )
+                log.error(f"Telegram API вернул HTTP {response.status_code}: {response.text}")
                 return False
 
             data = response.json()

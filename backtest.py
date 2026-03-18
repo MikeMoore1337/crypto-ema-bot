@@ -3,7 +3,6 @@ backtest.py - Движок бэктестинга на исторических 
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -89,7 +88,7 @@ class BacktestReport:
 
 
 class Backtester:
-    def __init__(self):
+    def __init__(self) -> None:
         self.cfg = Config.backtest
         self.strategy = EMAStrategy()
         self.risk_cfg = Config.risk
@@ -123,10 +122,9 @@ class Backtester:
             else:
                 position["trailing_stop"] = min(position["trailing_stop"], candidate)
 
-    def run(self, df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> BacktestReport:
+    def run(self, df: pd.DataFrame, htf_df: pd.DataFrame | None = None) -> BacktestReport:
         log.info(
-            f"Бэктест на {len(df)} свечах | "
-            f"{df['timestamp'].iloc[0]} → {df['timestamp'].iloc[-1]}"
+            f"Бэктест на {len(df)} свечах | {df['timestamp'].iloc[0]} → {df['timestamp'].iloc[-1]}"
         )
 
         df = self.strategy.add_indicators(df)
@@ -136,7 +134,7 @@ class Backtester:
         equity_curve = [balance]
         trades: list[Trade] = []
 
-        position: Optional[dict] = None
+        position: dict | None = None
         start = Config.strategy.min_candles
 
         for i in range(start, len(df)):
@@ -146,8 +144,8 @@ class Backtester:
             high = float(row["high"])
 
             if position is not None:
-                exit_price = None
-                exit_reason = None
+                exit_price: float | None = None
+                exit_reason: str = ""
 
                 if position["side"] == "LONG":
                     active_stop = position["stop_loss"]
@@ -170,23 +168,25 @@ class Backtester:
                 if exit_price is not None:
                     pnl = self._calculate_pnl(position, exit_price, commission)
                     balance += pnl
-                    trades.append(Trade(
-                        entry_time=position["entry_time"],
-                        exit_time=row["timestamp"],
-                        side=position["side"],
-                        entry_price=position["entry_price"],
-                        exit_price=exit_price,
-                        qty=position["qty"],
-                        pnl=pnl,
-                        pnl_pct=(pnl / (position["qty"] * position["entry_price"])) * 100,
-                        exit_reason=exit_reason,
-                    ))
+                    trades.append(
+                        Trade(
+                            entry_time=position["entry_time"],
+                            exit_time=row["timestamp"],
+                            side=position["side"],
+                            entry_price=position["entry_price"],
+                            exit_price=exit_price,
+                            qty=position["qty"],
+                            pnl=pnl,
+                            pnl_pct=(pnl / (position["qty"] * position["entry_price"])) * 100,
+                            exit_reason=exit_reason,
+                        )
+                    )
                     equity_curve.append(balance)
                     position = None
                     continue
 
             current_side = position["side"] if position else None
-            signal_window = df.iloc[max(0, i - Config.strategy.min_candles):i + 1]
+            signal_window = df.iloc[max(0, i - Config.strategy.min_candles) : i + 1]
 
             htf_window = None
             if htf_df is not None:
@@ -200,17 +200,19 @@ class Backtester:
             if result.signal == Signal.CLOSE and position is not None:
                 pnl = self._calculate_pnl(position, price, commission)
                 balance += pnl
-                trades.append(Trade(
-                    entry_time=position["entry_time"],
-                    exit_time=row["timestamp"],
-                    side=position["side"],
-                    entry_price=position["entry_price"],
-                    exit_price=price,
-                    qty=position["qty"],
-                    pnl=pnl,
-                    pnl_pct=(pnl / (position["qty"] * position["entry_price"])) * 100,
-                    exit_reason="Signal",
-                ))
+                trades.append(
+                    Trade(
+                        entry_time=position["entry_time"],
+                        exit_time=row["timestamp"],
+                        side=position["side"],
+                        entry_price=position["entry_price"],
+                        exit_price=price,
+                        qty=position["qty"],
+                        pnl=pnl,
+                        pnl_pct=(pnl / (position["qty"] * position["entry_price"])) * 100,
+                        exit_reason="Signal",
+                    )
+                )
                 equity_curve.append(balance)
                 position = None
                 continue
@@ -254,7 +256,7 @@ class Backtester:
             raw_pnl = (entry - exit_price) * qty
 
         total_commission = (entry * qty + exit_price * qty) * commission
-        return raw_pnl - total_commission
+        return float(raw_pnl - total_commission)
 
     def _build_report(
         self,
@@ -273,8 +275,8 @@ class Backtester:
         profit_factor = total_win / total_loss if total_loss > 0 else float("inf")
 
         equity = pd.Series(equity_curve)
-        rolling_max = equity.cummax()
-        drawdown = (equity - rolling_max) / rolling_max * 100
+        rolling_max: pd.Series = equity.cummax()
+        drawdown: pd.Series = (equity - rolling_max) / rolling_max * 100
         max_drawdown = abs(drawdown.min())
 
         if len(trades) > 1:

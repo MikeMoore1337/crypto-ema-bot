@@ -11,7 +11,7 @@ import argparse
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, date, datetime
 
 import pandas as pd
 
@@ -40,17 +40,16 @@ class TradingBot:
         self.position_info: dict[str, dict] = {symbol: {} for symbol in self.symbols}
 
         self.paper_balance = 100.0
-        self.paper_trades = []
+        self.paper_trades: list[dict] = []
 
-        self.last_report_day = None
+        # Счётчики свечей после последнего закрытия позиции — для логики reentry
+        self.bars_since_close: dict[str, int] = {symbol: 999 for symbol in self.symbols}
+
+        self.last_report_day: date | None = None
         self.last_heartbeat = time.time()
 
         self.telegram = None
-        if (
-            Config.telegram.enabled
-            and Config.telegram.token
-            and Config.telegram.chat_id
-        ):
+        if Config.telegram.enabled and Config.telegram.token and Config.telegram.chat_id:
             self.telegram = TelegramNotifier(
                 Config.telegram.token,
                 Config.telegram.chat_id,
@@ -88,6 +87,8 @@ class TradingBot:
         close_price = float(last["close"])
         mult = Config.strategy.atr_trailing_mult
 
+        entry_price = info.get("entry", 0.0)
+
         if info["side"] == "LONG":
             info["highest_close"] = max(info["highest_close"], close_price)
             candidate = info["highest_close"] - atr * mult
@@ -97,6 +98,12 @@ class TradingBot:
             else:
                 info["trailing_stop"] = max(info["trailing_stop"], candidate)
 
+            # Breakeven: как только цена прошла trigger×ATR вверх → стоп минимум в точке входа
+            if Config.strategy.use_breakeven_stop and entry_price > 0:
+                trigger = Config.strategy.atr_breakeven_trigger
+                if close_price >= entry_price + atr * trigger:
+                    info["sl"] = max(info["sl"], entry_price)
+
         else:
             info["lowest_close"] = min(info["lowest_close"], close_price)
             candidate = info["lowest_close"] + atr * mult
@@ -105,6 +112,12 @@ class TradingBot:
                 info["trailing_stop"] = candidate
             else:
                 info["trailing_stop"] = min(info["trailing_stop"], candidate)
+
+            # Breakeven: как только цена прошла trigger×ATR вниз → стоп максимум в точке входа
+            if Config.strategy.use_breakeven_stop and entry_price > 0:
+                trigger = Config.strategy.atr_breakeven_trigger
+                if close_price <= entry_price - atr * trigger:
+                    info["sl"] = min(info["sl"], entry_price)
 
     def run(self) -> None:
         log.info("▶️  Запуск торгового цикла...")
@@ -123,7 +136,7 @@ class TradingBot:
             try:
                 self.last_heartbeat = time.time()
 
-                now_utc = datetime.now(timezone.utc)
+                now_utc = datetime.now(UTC)
                 today = now_utc.date()
 
                 if self.last_report_day is None:
@@ -182,9 +195,12 @@ class TradingBot:
         if self.positions[symbol] is not None:
             self._update_trailing_stop(symbol, signal_df)
 
-        if self.mode == "paper" and self.positions[symbol] is not None:
-            if self._check_paper_exit_by_stops(symbol, current_bar):
-                return
+        if (
+            self.mode == "paper"
+            and self.positions[symbol] is not None
+            and self._check_paper_exit_by_stops(symbol, current_bar)
+        ):
+            return
 
         balance = self._get_balance()
         self.risk_manager.update_balance(balance)
@@ -201,16 +217,34 @@ class TradingBot:
 
         exec_price = float(current_bar["open"])
 
+        # Увеличиваем счётчик свечей с последнего закрытия
+        if self.positions[symbol] is None:
+            self.bars_since_close[symbol] = self.bars_since_close.get(symbol, 999) + 1
+
         if result.signal == Signal.CLOSE and current_position is not None:
             self._close_position(symbol, exec_price, exit_reason="Signal")
+            self.bars_since_close[symbol] = 0
 
         elif result.signal in (Signal.LONG, Signal.SHORT) and current_position is None:
             if not can_trade:
                 log.warning(f"{symbol}: ⛔ Торговля заблокирована: {reason}")
                 return
-            self._open_position(symbol, result.signal.value, exec_price, balance)
+            self._open_position(symbol, result.signal.value, exec_price, balance, adx=result.adx)
 
-    def _open_position(self, symbol: str, side: str, price: float, balance: float) -> None:
+        # Повторный вход (reentry) — если нет кроссовера, но тренд продолжается
+        elif (
+            result.signal == Signal.HOLD
+            and current_position is None
+            and can_trade
+            and Config.strategy.allow_trend_reentry
+            and self.bars_since_close.get(symbol, 999)
+            >= Config.strategy.reentry_min_bars_after_close
+        ):
+            self._try_reentry(symbol, signal_df, htf_signal_df, exec_price, balance)
+
+    def _open_position(
+        self, symbol: str, side: str, price: float, balance: float, adx: float = 0.0
+    ) -> None:
         params = self.risk_manager.calculate_position(
             balance=balance,
             entry_price=price,
@@ -315,10 +349,12 @@ class TradingBot:
             net_pnl = pnl - commission
 
             self.paper_balance += net_pnl
-            self.paper_trades.append({
-                "symbol": symbol,
-                "pnl": net_pnl,
-            })
+            self.paper_trades.append(
+                {
+                    "symbol": symbol,
+                    "pnl": net_pnl,
+                }
+            )
 
             self.risk_manager.record_trade_result(
                 net_pnl,
@@ -361,8 +397,13 @@ class TradingBot:
                 active_stop = max(active_stop, trailing)
 
             if low <= active_stop:
-                reason = "ATR-Trail" if trailing is not None and active_stop == max(sl, trailing) and trailing > sl else "SL"
+                reason = (
+                    "ATR-Trail"
+                    if trailing is not None and active_stop == max(sl, trailing) and trailing > sl
+                    else "SL"
+                )
                 self._close_position(symbol, active_stop, exit_reason=reason)
+                self.bars_since_close[symbol] = 0
                 return True
 
         elif side == "SHORT":
@@ -371,11 +412,88 @@ class TradingBot:
                 active_stop = min(active_stop, trailing)
 
             if high >= active_stop:
-                reason = "ATR-Trail" if trailing is not None and active_stop == min(sl, trailing) and trailing < sl else "SL"
+                reason = (
+                    "ATR-Trail"
+                    if trailing is not None and active_stop == min(sl, trailing) and trailing < sl
+                    else "SL"
+                )
                 self._close_position(symbol, active_stop, exit_reason=reason)
+                self.bars_since_close[symbol] = 0
                 return True
 
         return False
+
+    def _try_reentry(
+        self,
+        symbol: str,
+        signal_df: pd.DataFrame,
+        htf_df: pd.DataFrame,
+        exec_price: float,
+        balance: float,
+    ) -> None:
+        """
+        Повторный вход в тренд без нового кроссовера EMA.
+
+        Условия для SHORT reentry:
+          - fast EMA < slow EMA (тренд вниз)
+          - HTF подтверждает медвежий тренд
+          - ADX выше порога (тренд сильный)
+          - ATR выше минимального порога (достаточная волатильность)
+          - RSI не перепродан (> short_rsi_limit)
+
+        Зеркально для LONG reentry.
+        """
+        df = self.strategy.add_indicators(signal_df)
+        last = df.iloc[-1]
+
+        fast_ema = float(last["ema_fast"])
+        slow_ema = float(last["ema_slow"])
+        adx = float(last["adx"])
+        rsi = float(last["rsi"])
+        atr_pct = float(last["atr_pct"])
+
+        cfg = Config.strategy
+
+        # Определяем текущее направление тренда по EMA
+        trend_short = fast_ema < slow_ema
+        trend_long = fast_ema > slow_ema
+
+        # HTF фильтр
+        htf_bearish = False
+        htf_bullish = False
+        if len(htf_df) >= cfg.htf_ema_period:
+            htf_enriched = self.strategy.add_indicators(htf_df)
+            htf_close = float(htf_enriched["close"].iloc[-1])
+            htf_ema_now = float(htf_enriched["ema_htf"].iloc[-1])
+            htf_bearish = htf_close < htf_ema_now
+            htf_bullish = htf_close > htf_ema_now
+
+        reentry_side = None
+
+        if (
+            trend_short
+            and htf_bearish
+            and adx >= cfg.adx_threshold
+            and atr_pct >= cfg.min_atr_pct
+            and rsi > cfg.short_rsi_limit
+        ):
+            reentry_side = "SHORT"
+
+        elif (
+            trend_long
+            and htf_bullish
+            and adx >= cfg.adx_threshold
+            and atr_pct >= cfg.min_atr_pct
+            and rsi < cfg.long_rsi_limit
+        ):
+            reentry_side = "LONG"
+
+        if reentry_side:
+            log.info(
+                f"{symbol}: 🔄 Reentry {reentry_side} | "
+                f"ADX={adx:.1f} RSI={rsi:.1f} ATR%={atr_pct:.4f}"
+            )
+            self._open_position(symbol, reentry_side, exec_price, balance, adx=adx)
 
     def _get_balance(self) -> float:
         if self.mode == "paper":
@@ -454,7 +572,7 @@ def load_full_history(
     needed_candles: int,
 ) -> pd.DataFrame:
     all_dfs = []
-    end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    end_ms = int(datetime.now(UTC).timestamp() * 1000)
 
     while True:
         batch = exchange.get_candles(
@@ -524,24 +642,24 @@ def run_backtest() -> None:
     htf_needed = htf_days * 24
 
     log.info("Загрузка часовых свечей для HTF фильтра...")
-    htf_df = load_full_history(
+    htf_df: pd.DataFrame | None = load_full_history(
         exchange=exchange,
         symbol=cfg.symbol,
         interval="60",
         needed_candles=htf_needed,
     )
 
-    if htf_df.empty:
+    if htf_df is not None and htf_df.empty:
         log.warning("Не удалось загрузить HTF данные - бэктест пойдёт без полноценного HTF фильтра")
         htf_df = None
-    else:
+    elif htf_df is not None:
         log.info(f"Загружено {len(htf_df)} часовых свечей [1h]")
 
     report = backtester.run(df, htf_df)
     report.print()
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Bybit Trading Bot")
     parser.add_argument(
         "--mode",

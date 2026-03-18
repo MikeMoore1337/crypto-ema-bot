@@ -3,7 +3,6 @@ risk_manager.py - Управление рисками.
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 from config import Config
 from logger import get_logger
@@ -14,9 +13,10 @@ log = get_logger("risk")
 @dataclass
 class PositionParams:
     """Параметры для открытия позиции."""
+
     qty: float
     stop_loss: float
-    take_profit: Optional[float]
+    take_profit: float | None
     risk_usdt: float
 
 
@@ -26,7 +26,7 @@ class RiskManager:
     Хранит дневную статистику и проверяет дневной лимит убытка.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.cfg = Config.risk
         self.trade_cfg = Config.trading
 

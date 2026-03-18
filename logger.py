@@ -31,18 +31,20 @@ _SHARED_FILE_HANDLER: logging.Handler | None = None
 
 
 def _build_console_handler() -> logging.Handler:
-    handler = colorlog.StreamHandler()
-    handler.setFormatter(colorlog.ColoredFormatter(
-        "%(log_color)s%(asctime)s [%(levelname)s] %(name)s: %(message)s%(reset)s",
-        datefmt="%H:%M:%S",
-        log_colors={
-            "DEBUG": "cyan",
-            "INFO": "green",
-            "WARNING": "yellow",
-            "ERROR": "red",
-            "CRITICAL": "red,bg_white",
-        }
-    ))
+    handler: logging.Handler = colorlog.StreamHandler()
+    handler.setFormatter(
+        colorlog.ColoredFormatter(
+            "%(log_color)s%(asctime)s [%(levelname)s] %(name)s: %(message)s%(reset)s",
+            datefmt="%H:%M:%S",
+            log_colors={
+                "DEBUG": "cyan",
+                "INFO": "green",
+                "WARNING": "yellow",
+                "ERROR": "red",
+                "CRITICAL": "red,bg_white",
+            },
+        )
+    )
     return handler
 
 
@@ -54,10 +56,12 @@ def _build_file_handler() -> logging.Handler:
         backupCount=3,
         encoding="utf-8",
     )
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        "%Y-%m-%d %H:%M:%S",
-    ))
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            "%Y-%m-%d %H:%M:%S",
+        )
+    )
     return handler
 
 

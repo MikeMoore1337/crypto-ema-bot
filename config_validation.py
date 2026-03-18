@@ -117,4 +117,3 @@ def validate_config(*, mode: str) -> list[ValidationIssue]:
             )
 
     return issues
-

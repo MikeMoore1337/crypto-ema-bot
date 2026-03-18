@@ -4,7 +4,6 @@ strategy.py - Стратегия EMA Crossover с фильтрацией.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -34,7 +33,7 @@ class StrategyResult:
 
 
 class EMAStrategy:
-    def __init__(self):
+    def __init__(self) -> None:
         cfg = Config.strategy
         self.fast_period = cfg.fast_ema_period
         self.slow_period = cfg.slow_ema_period
@@ -90,11 +89,14 @@ class EMAStrategy:
         prev_high = high.shift(1)
         prev_low = low.shift(1)
 
-        tr = pd.concat([
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ], axis=1).max(axis=1)
+        tr = pd.concat(
+            [
+                high - low,
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
 
         up_move = high - prev_high
         down_move = prev_low - low
@@ -127,11 +129,14 @@ class EMAStrategy:
         close = df["close"]
         prev_close = close.shift(1)
 
-        tr = pd.concat([
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ], axis=1).max(axis=1)
+        tr = pd.concat(
+            [
+                high - low,
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
 
         return tr.ewm(alpha=1 / period, adjust=False).mean()
 
@@ -171,8 +176,8 @@ class EMAStrategy:
     def get_signal(
         self,
         df: pd.DataFrame,
-        current_position: Optional[str] = None,
-        htf_df: Optional[pd.DataFrame] = None,
+        current_position: str | None = None,
+        htf_df: pd.DataFrame | None = None,
     ) -> StrategyResult:
         if len(df) < self.min_candles:
             price = float(df["close"].iloc[-1]) if not df.empty else 0.0

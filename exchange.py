@@ -5,8 +5,6 @@ exchange.py - Обёртка над Bybit API.
 Остальной код не знает о HTTP-запросах и деталях API.
 """
 
-from typing import Optional
-
 import pandas as pd
 from pybit.unified_trading import HTTP
 
@@ -21,7 +19,7 @@ class BybitExchange:
     Клиент для работы с Bybit Unified Trading API.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         cfg = Config.exchange
         self.session = HTTP(
             testnet=cfg.testnet,
@@ -32,11 +30,11 @@ class BybitExchange:
         log.info(f"Подключение к Bybit [{mode}]")
 
     def get_candles(
-            self,
-            symbol: str,
-            interval: str,
-            limit: int = 200,
-            end_ms: Optional[int] = None,
+        self,
+        symbol: str,
+        interval: str,
+        limit: int = 200,
+        end_ms: int | None = None,
     ) -> pd.DataFrame:
         """
         Получить свечи с биржи Bybit.
@@ -65,11 +63,14 @@ class BybitExchange:
                     log.warning(f"Пустой ответ для {symbol} [{interval}m]")
                     return pd.DataFrame()
 
-                df = pd.DataFrame(result, columns=[
-                    "timestamp", "open", "high", "low", "close", "volume", "turnover"
-                ])
+                df = pd.DataFrame(
+                    result,
+                    columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"],
+                )
 
-                df["timestamp"] = pd.to_datetime(df["timestamp"].astype("int64"), unit="ms", utc=True)
+                df["timestamp"] = pd.to_datetime(
+                    df["timestamp"].astype("int64"), unit="ms", utc=True
+                )
                 df["timestamp"] = df["timestamp"].dt.tz_localize(None)
 
                 for col in ["open", "high", "low", "close", "volume"]:
@@ -86,11 +87,14 @@ class BybitExchange:
 
                 if attempt < 2:
                     import time
+
                     time.sleep(2)
                 else:
                     return pd.DataFrame()
 
-    def get_ticker(self, symbol: str) -> Optional[float]:
+        return pd.DataFrame()  # fallback если все попытки исчерпаны
+
+    def get_ticker(self, symbol: str) -> float | None:
         """Текущая цена символа."""
         try:
             response = self.session.get_tickers(
@@ -123,19 +127,19 @@ class BybitExchange:
                 category=Config.trading.category,
                 symbol=symbol,
             )
-            return response["result"]["list"]
+            return list(response["result"]["list"])
         except Exception as e:
             log.error(f"Ошибка получения позиций: {e}")
             return []
 
     def place_market_order(
-            self,
-            symbol: str,
-            side: str,
-            qty: float,
-            stop_loss: Optional[float] = None,
-            take_profit: Optional[float] = None,
-    ) -> Optional[str]:
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+    ) -> str | None:
         """
         Открыть позицию по рынку с встроенным стоп-лоссом и тейк-профитом.
 
@@ -158,7 +162,7 @@ class BybitExchange:
                 params["takeProfit"] = str(round(take_profit, 2))
 
             response = self.session.place_order(**params)
-            order_id = response["result"]["orderId"]
+            order_id: str = str(response["result"]["orderId"])
 
             log.info(f"✅ Ордер {side} {qty} {symbol} | SL: {stop_loss} | TP: {take_profit}")
             return order_id

@@ -100,9 +100,9 @@ class StrategyConfig:
     atr_breakeven_trigger: float = 1.0  # после 1×ATR в нашу сторону → стоп в безубыток
 
     # Повторный вход в тренд без нового кроссовера (reentry)
-    # Позволяет войти заново если тренд продолжается после стоп-аута
     allow_trend_reentry: bool = True
     reentry_min_bars_after_close: int = 3  # ждать N свечей после закрытия перед reentry
+    reentry_adx_min: float = 30.0  # reentry требует более сильного тренда чем обычный вход
 
 
 @dataclass

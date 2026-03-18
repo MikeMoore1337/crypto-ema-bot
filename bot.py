@@ -36,14 +36,14 @@ class TradingBot:
 
         self.symbols = self.cfg.symbols if self.cfg.symbols else [self.cfg.symbol]
 
-        self.positions: dict[str, str | None] = {symbol: None for symbol in self.symbols}
+        self.positions: dict[str, str | None] = dict.fromkeys(self.symbols)
         self.position_info: dict[str, dict] = {symbol: {} for symbol in self.symbols}
 
         self.paper_balance = 100.0
         self.paper_trades: list[dict] = []
 
         # Счётчики свечей после последнего закрытия позиции — для логики reentry
-        self.bars_since_close: dict[str, int] = {symbol: 999 for symbol in self.symbols}
+        self.bars_since_close: dict[str, int] = dict.fromkeys(self.symbols, 999)
 
         self.last_report_day: date | None = None
         self.last_heartbeat = time.time()
@@ -86,7 +86,6 @@ class TradingBot:
 
         close_price = float(last["close"])
         mult = Config.strategy.atr_trailing_mult
-
         entry_price = info.get("entry", 0.0)
 
         if info["side"] == "LONG":
@@ -98,11 +97,13 @@ class TradingBot:
             else:
                 info["trailing_stop"] = max(info["trailing_stop"], candidate)
 
-            # Breakeven: как только цена прошла trigger×ATR вверх → стоп минимум в точке входа
-            if Config.strategy.use_breakeven_stop and entry_price > 0:
-                trigger = Config.strategy.atr_breakeven_trigger
-                if close_price >= entry_price + atr * trigger:
-                    info["sl"] = max(info["sl"], entry_price)
+            # Breakeven: цена прошла trigger×ATR вверх → стоп минимум в точке входа
+            if (
+                Config.strategy.use_breakeven_stop
+                and entry_price > 0
+                and close_price >= entry_price + atr * Config.strategy.atr_breakeven_trigger
+            ):
+                info["sl"] = max(info["sl"], entry_price)
 
         else:
             info["lowest_close"] = min(info["lowest_close"], close_price)
@@ -113,11 +114,13 @@ class TradingBot:
             else:
                 info["trailing_stop"] = min(info["trailing_stop"], candidate)
 
-            # Breakeven: как только цена прошла trigger×ATR вниз → стоп максимум в точке входа
-            if Config.strategy.use_breakeven_stop and entry_price > 0:
-                trigger = Config.strategy.atr_breakeven_trigger
-                if close_price <= entry_price - atr * trigger:
-                    info["sl"] = min(info["sl"], entry_price)
+            # Breakeven: цена прошла trigger×ATR вниз → стоп максимум в точке входа
+            if (
+                Config.strategy.use_breakeven_stop
+                and entry_price > 0
+                and close_price <= entry_price - atr * Config.strategy.atr_breakeven_trigger
+            ):
+                info["sl"] = min(info["sl"], entry_price)
 
     def run(self) -> None:
         log.info("▶️  Запуск торгового цикла...")
@@ -249,7 +252,7 @@ class TradingBot:
             balance=balance,
             entry_price=price,
             side=side,
-            signal_context={"adx": result.adx},
+            signal_context={"adx": adx},
         )
 
         if self.mode == "live":
@@ -434,14 +437,8 @@ class TradingBot:
         """
         Повторный вход в тренд без нового кроссовера EMA.
 
-        Условия для SHORT reentry:
-          - fast EMA < slow EMA (тренд вниз)
-          - HTF подтверждает медвежий тренд
-          - ADX выше порога (тренд сильный)
-          - ATR выше минимального порога (достаточная волатильность)
-          - RSI не перепродан (> short_rsi_limit)
-
-        Зеркально для LONG reentry.
+        Использует reentry_adx_min (отдельный, более строгий порог чем adx_threshold),
+        чтобы не входить в слабые тренды после стоп-аута.
         """
         df = self.strategy.add_indicators(signal_df)
         last = df.iloc[-1]
@@ -454,11 +451,9 @@ class TradingBot:
 
         cfg = Config.strategy
 
-        # Определяем текущее направление тренда по EMA
         trend_short = fast_ema < slow_ema
         trend_long = fast_ema > slow_ema
 
-        # HTF фильтр
         htf_bearish = False
         htf_bullish = False
         if len(htf_df) >= cfg.htf_ema_period:
@@ -473,7 +468,7 @@ class TradingBot:
         if (
             trend_short
             and htf_bearish
-            and adx >= cfg.adx_threshold
+            and adx >= cfg.reentry_adx_min
             and atr_pct >= cfg.min_atr_pct
             and rsi > cfg.short_rsi_limit
         ):
@@ -482,7 +477,7 @@ class TradingBot:
         elif (
             trend_long
             and htf_bullish
-            and adx >= cfg.adx_threshold
+            and adx >= cfg.reentry_adx_min
             and atr_pct >= cfg.min_atr_pct
             and rsi < cfg.long_rsi_limit
         ):

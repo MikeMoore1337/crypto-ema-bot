@@ -373,7 +373,7 @@ class TradingBot:
 
             if self.telegram:
                 self.telegram.send(
-                    f"❌ {symbol} | Закрыта {position_side}\n"
+                    f"{emoji} {symbol} | Закрыта {position_side}\n"
                     f"Цена выхода: {price:.2f}\n"
                     f"Причина: {exit_reason}\n"
                     f"P&L: {net_pnl:+.4f}$\n"

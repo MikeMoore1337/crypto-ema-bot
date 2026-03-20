@@ -78,7 +78,7 @@ class StrategyConfig:
 
     long_rsi_limit: float = 72.0
     short_rsi_limit: float = 35.0
-    min_ema_spread_pct: float = 0.0006
+    min_ema_spread_pct: float = 0.0003  # снижено: 0.0006 блокировало входы при боковике
     slope_lookback: int = 5
 
     soft_htf_filter: bool = True
@@ -88,7 +88,7 @@ class StrategyConfig:
     # ATR / volatility
     atr_period: int = 14
     use_volatility_filter: bool = True
-    min_atr_pct: float = 0.0035  # 0.35%
+    min_atr_pct: float = 0.0015  # 0.15% — снижено под реальную волатильность mainnet
 
     # Выходы
     use_ema_exit: bool = False

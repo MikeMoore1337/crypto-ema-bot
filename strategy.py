@@ -32,6 +32,18 @@ class StrategyResult:
     reason: str
 
 
+def _fmt_price(value: float) -> str:
+    """Форматирует цену читаемо для любого актива."""
+    if value >= 1000:
+        return f"{value:.0f}"
+    elif value >= 10:
+        return f"{value:.2f}"
+    elif value >= 0.1:
+        return f"{value:.4f}"
+    else:
+        return f"{value:.6f}"
+
+
 class EMAStrategy:
     def __init__(self) -> None:
         cfg = Config.strategy
@@ -340,7 +352,7 @@ class EMAStrategy:
             rsi=rsi,
             adx=adx,
             reason=(
-                f"HOLD | EMA {fast_ema:.0f}/{slow_ema:.0f} "
+                f"HOLD | EMA {_fmt_price(fast_ema)}/{_fmt_price(slow_ema)} "
                 f"ADX={adx:.1f} RSI={rsi:.1f} ATR%={atr_pct:.4f}"
             ),
         )

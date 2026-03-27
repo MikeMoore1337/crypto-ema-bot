@@ -10,6 +10,7 @@ from pybit.unified_trading import HTTP
 
 from config import Config
 from logger import get_logger
+from risk_manager import _round_price
 
 log = get_logger("exchange")
 
@@ -157,9 +158,9 @@ class BybitExchange:
             }
 
             if stop_loss is not None:
-                params["stopLoss"] = str(round(stop_loss, 2))
+                params["stopLoss"] = str(_round_price(stop_loss))
             if take_profit is not None:
-                params["takeProfit"] = str(round(take_profit, 2))
+                params["takeProfit"] = str(_round_price(take_profit))
 
             response = self.session.place_order(**params)
             order_id: str = str(response["result"]["orderId"])

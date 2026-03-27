@@ -19,7 +19,7 @@ class ExchangeConfig:
 
     api_key: str = field(default_factory=lambda: os.getenv("BYBIT_API_KEY", ""))
     api_secret: str = field(default_factory=lambda: os.getenv("BYBIT_API_SECRET", ""))
-    testnet: bool = True  # True - testnet, False - mainnet
+    testnet: bool = False  # True - testnet, False - mainnet
 
 
 @dataclass
@@ -27,12 +27,7 @@ class TradingConfig:
     """Параметры торговли."""
 
     symbol: str = "BTCUSDT"
-    symbols: list[str] = field(
-        default_factory=lambda: [
-            "BTCUSDT",
-            "ETHUSDT",
-        ]
-    )
+    symbols: list[str] = field(default_factory=lambda: ["BTCUSDT", "TRXUSDT", "HYPEUSDT"])
     interval: str = "5"
     category: str = "linear"
     position_size_pct: float = 0.10
@@ -93,7 +88,7 @@ class StrategyConfig:
     # Выходы
     use_ema_exit: bool = False
     use_atr_trailing_stop: bool = True
-    atr_trailing_mult: float = 2.5
+    atr_trailing_mult: float = 3.0  # увеличено с 2.5 — даём позиции больше пространства
 
     # Breakeven stop: после N×ATR прибыли стоп переносится в точку входа
     use_breakeven_stop: bool = True
@@ -101,15 +96,15 @@ class StrategyConfig:
 
     # Повторный вход в тренд без нового кроссовера (reentry)
     allow_trend_reentry: bool = True
-    reentry_min_bars_after_close: int = 3  # ждать N свечей после закрытия перед reentry
-    reentry_adx_min: float = 30.0  # reentry требует более сильного тренда чем обычный вход
+    reentry_min_bars_after_close: int = 8  # ~40 минут — было 3, снижает частоту churning
+    reentry_adx_min: float = 25.0  # reentry требует более сильного тренда чем обычный вход
 
 
 @dataclass
 class BacktestConfig:
     """Параметры бэктестинга."""
 
-    initial_balance: float = 100.0
+    initial_balance: float = 500.0
     days: int = 90
     commission_pct: float = 0.00055
 

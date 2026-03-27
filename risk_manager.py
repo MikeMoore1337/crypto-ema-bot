@@ -20,6 +20,20 @@ class PositionParams:
     risk_usdt: float
 
 
+def _round_price(price: float) -> float:
+    """Округляет цену с нужной точностью в зависимости от её величины.
+    Решает проблему TRX/DOGE, где round(0.313, 2) = 0.31 = цена входа → SL совпадает с entry.
+    """
+    if price >= 100:
+        return round(price, 2)
+    elif price >= 1:
+        return round(price, 4)
+    elif price >= 0.01:
+        return round(price, 5)
+    else:
+        return round(price, 6)
+
+
 class RiskManager:
     """
     Рассчитывает размер позиции и уровни SL/TP.
@@ -191,7 +205,7 @@ class RiskManager:
 
         return PositionParams(
             qty=qty,
-            stop_loss=round(stop_loss, 2),
-            take_profit=round(take_profit, 2) if take_profit is not None else None,
+            stop_loss=_round_price(stop_loss),
+            take_profit=_round_price(take_profit) if take_profit is not None else None,
             risk_usdt=round(risk_usdt, 4),
         )

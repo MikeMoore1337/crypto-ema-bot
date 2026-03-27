@@ -11,7 +11,7 @@ import argparse
 import os
 import threading
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 import pandas as pd
 
@@ -20,7 +20,7 @@ from config import Config
 from exchange import BybitExchange
 from logger import get_logger
 from risk_manager import RiskManager
-from strategy import EMAStrategy, Signal
+from strategy import EMAStrategy, Signal, _fmt_price
 from telegram_notifier import TelegramNotifier
 
 log = get_logger("bot")
@@ -39,13 +39,11 @@ class TradingBot:
         self.positions: dict[str, str | None] = dict.fromkeys(self.symbols)
         self.position_info: dict[str, dict] = {symbol: {} for symbol in self.symbols}
 
-        self.paper_balance = 100.0
+        self.paper_balance = Config.backtest.initial_balance
         self.paper_trades: list[dict] = []
 
         # Счётчики свечей после последнего закрытия позиции — для логики reentry
         self.bars_since_close: dict[str, int] = dict.fromkeys(self.symbols, 999)
-
-        self.last_report_day: date | None = None
         self.last_heartbeat = time.time()
 
         self.telegram = None
@@ -133,27 +131,21 @@ class TradingBot:
         balance = self._get_balance()
         self.risk_manager.reset_daily_stats(balance)
         self.risk_manager.update_balance(balance)
-        last_day = datetime.now().day
+        last_date = datetime.now(UTC).date()
 
         while True:
             try:
                 self.last_heartbeat = time.time()
 
-                now_utc = datetime.now(UTC)
-                today = now_utc.date()
+                today = datetime.now(UTC).date()
 
-                if self.last_report_day is None:
-                    self.last_report_day = today
-                elif today != self.last_report_day:
+                if today != last_date:
+                    # Сначала отправляем отчёт за прошедший день, потом сбрасываем
                     self.send_daily_report()
-                    self.last_report_day = today
-
-                current_day = datetime.now().day
-                if current_day != last_day:
                     balance = self._get_balance()
                     self.risk_manager.reset_daily_stats(balance)
                     self.risk_manager.update_balance(balance)
-                    last_day = current_day
+                    last_date = today
 
                 for symbol in self.symbols:
                     self._tick(symbol)
@@ -286,8 +278,8 @@ class TradingBot:
                 if self.telegram:
                     self.telegram.send(
                         f"🚀 {symbol} {side}\n"
-                        f"Цена: {price:.2f}\n"
-                        f"SL: {params.stop_loss:.2f}\n"
+                        f"Цена: {_fmt_price(price)}\n"
+                        f"SL: {params.stop_loss}\n"
                         f"Qty: {params.qty:.4f}"
                     )
 
@@ -305,15 +297,15 @@ class TradingBot:
             }
 
             log.info(
-                f"📝 [PAPER] {symbol} | Открыт {side} @ {price:.2f} | "
-                f"qty={params.qty:.4f} SL={params.stop_loss:.2f}"
+                f"📝 [PAPER] {symbol} | Открыт {side} @ {_fmt_price(price)} | "
+                f"qty={params.qty:.4f} SL={params.stop_loss}"
             )
 
             if self.telegram:
                 self.telegram.send(
                     f"🚀 {symbol} {side}\n"
-                    f"Цена: {price:.2f}\n"
-                    f"SL: {params.stop_loss:.2f}\n"
+                    f"Цена: {_fmt_price(price)}\n"
+                    f"SL: {params.stop_loss}\n"
                     f"Qty: {params.qty:.4f}"
                 )
 
@@ -505,7 +497,7 @@ class TradingBot:
         print("\n" + "═" * 55)
         print("             ИТОГИ PAPER TRADING")
         print("═" * 55)
-        print("  Начальный баланс:  $100.00")
+        print(f"  Начальный баланс:  ${Config.backtest.initial_balance:.2f}")
         print(f"  Конечный баланс:   ${self.paper_balance:.4f}")
         print(f"  Всего сделок:      {len(self.paper_trades)}")
         print(f"  Прибыльных:        {len(wins)}")

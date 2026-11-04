@@ -1,0 +1,43 @@
+name: Dependency CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  offline-dependency-check:
+    name: Python 3.13 deps (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Python 3.13
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.13"
+      - name: Install pinned requirements
+        run: python -m pip install --requirement requirements.txt
+      - name: Verify resolver consistency
+        run: python -m pip check
+      - name: Compile application modules without executing the bot
+        run: python -m compileall -q bot.py strategy.py backtest.py risk_manager.py exchange.py config.py config_validation.py
+      - name: Verify data and HTTP dependencies without network calls
+        run: python -c "import certifi, numpy, pandas, pandas_ta, numba, pybit, requests; print(certifi.__version__)"
+      - name: Install pinned dependency auditor
+        run: python -m pip install pip-audit==2.10.1
+      - name: Audit pinned direct and transitive versions
+        run: python -m pip_audit --no-deps --disable-pip --requirement requirements.txt
